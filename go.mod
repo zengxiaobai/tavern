@@ -3,9 +3,11 @@ module github.com/omalloc/tavern
 go 1.25.2
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/prometheus/client_golang v1.23.2
 	golang.org/x/sync v0.18.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
