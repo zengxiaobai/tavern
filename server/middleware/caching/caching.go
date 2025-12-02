@@ -76,6 +76,7 @@ func (c *Caching) responseCache(req *http.Request) (*http.Response, error) {
 
 func (c *Caching) doProxy(req *http.Request) (*http.Response, error) {
 	proxyReq := cloneRequest(req)
+
 	c.log.Infof("doPorxy with %s", proxyReq.URL.String())
 
 	resp, err := c.proxyClient.Do(proxyReq, false)
@@ -86,7 +87,6 @@ func (c *Caching) doProxy(req *http.Request) (*http.Response, error) {
 }
 
 func cloneRequest(req *http.Request) *http.Request {
-
 	proxyURL, _ := url.Parse(req.URL.String())
 	if proxyURL.Host == "" {
 		proxyURL.Host = req.Host

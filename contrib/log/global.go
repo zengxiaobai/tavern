@@ -50,6 +50,15 @@ func Context(ctx context.Context) *Helper {
 	return NewHelper(WithContext(ctx, global.Logger))
 }
 
+// Enabled ..
+func Enabled(level Level) bool {
+	f, ok := global.Logger.(*Filter)
+	if !ok {
+		return false
+	}
+	return f.level >= level
+}
+
 // Debug logs a message at debug level.
 func Debug(a ...any) {
 	_ = global.Log(LevelDebug, DefaultMessageKey, fmt.Sprint(a...))

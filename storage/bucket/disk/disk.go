@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/paulbellamy/ratecounter"
@@ -146,37 +147,111 @@ func (d *diskBucket) loadLRU() {
 
 // Discard implements storage.Bucket.
 func (d *diskBucket) Discard(ctx context.Context, id *object.ID) error {
-	panic("unimplemented")
+	md, err := d.indexdb.Get(ctx, id.Bytes())
+	if err != nil {
+		return err
+	}
+
+	return d.discard(ctx, md)
 }
 
 // DiscardWithHash implements storage.Bucket.
 func (d *diskBucket) DiscardWithHash(ctx context.Context, hash object.IDHash) error {
-	panic("unimplemented")
+	id := hash[:]
+	wpath := hash.WPath(d.path)
+
+	log.Debugf("discard %s", wpath)
+
+	md, err := d.indexdb.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	// 缓存不存在
+	if md == nil {
+		return os.ErrNotExist
+	}
+
+	// part 是否存在
+	if md.Parts.Count() <= 0 {
+		return d.indexdb.Delete(ctx, id)
+	}
+
+	// 存在
+	if err = os.Remove(wpath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Context(ctx).Errorf("failed to remove file %s: %v", wpath, err)
+	}
+
+	// 删除 part
+	md.Parts.Clear()
+
+	return d.indexdb.Set(ctx, id, md)
 }
 
 // DiscardWithMessage implements storage.Bucket.
 func (d *diskBucket) DiscardWithMessage(ctx context.Context, id *object.ID, msg string) error {
-	panic("unimplemented")
+	log.Context(ctx).Infof("discard %s [path=%s] with message %s", id, id.WPath(d.path), msg)
+	return d.Discard(ctx, id)
 }
 
 // DiscardWithMetadata implements storage.Bucket.
 func (d *diskBucket) DiscardWithMetadata(ctx context.Context, meta *object.Metadata) error {
-	panic("unimplemented")
+	return d.Discard(ctx, meta.ID)
+}
+
+func (d *diskBucket) discard(ctx context.Context, md *object.Metadata) error {
+	// 缓存不存在
+	if md == nil {
+		return os.ErrNotExist
+	}
+
+	clog := log.Context(ctx)
+
+	// 先删除 db 中的数据, 避免被其他协程 HIT
+	if err := d.indexdb.Delete(ctx, md.ID.Bytes()); err != nil {
+		clog.Warnf("failed to delete metadata %s: %v", md.ID.WPath(d.path), err)
+	}
+
+	// 如果缓存为1级，则清除全部子缓存(vary)
+	if md.IsVary() && len(md.VirtualKey) > 0 {
+		for _, varyKey := range md.VirtualKey {
+			oid := object.NewVirtualID(md.ID.Path(), varyKey)
+			if strings.EqualFold(oid.HashStr(), md.ID.HashStr()) {
+				clog.Warnf("discard %s but level1 id equal level2 id", md.ID.WPath(d.path))
+				continue
+			}
+			// discard leveled cache (vary,chunked)
+			_ = d.Discard(ctx, oid)
+		}
+	}
+
+	fpath := md.ID.WPath(d.path)
+	if err := os.Remove(fpath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Context(ctx).Errorf("failed to remove cached file %s: %v", fpath, err)
+	}
+
+	u, _ := url.Parse(md.ID.Path())
+	_, _ = d.sharedkv.Decr(ctx, []byte(fmt.Sprintf("if/domain/%s", u.Host)), 1)
+
+	return nil
 }
 
 // Exist implements storage.Bucket.
 func (d *diskBucket) Exist(ctx context.Context, id []byte) bool {
-	panic("unimplemented")
+	return d.indexdb.Exist(ctx, id)
 }
 
 // Expired implements storage.Bucket.
 func (d *diskBucket) Expired(ctx context.Context, id *object.ID, md *object.Metadata) bool {
-	panic("unimplemented")
+	// TODO: check has expired
+	return false
 }
 
 // Iterate implements storage.Bucket.
 func (d *diskBucket) Iterate(ctx context.Context, fn func(*object.Metadata) error) error {
-	panic("unimplemented")
+	return d.indexdb.Iterate(ctx, nil, func(key []byte, val *object.Metadata) bool {
+		return fn(val) == nil
+	})
 }
 
 // Lookup implements storage.Bucket.
@@ -187,21 +262,21 @@ func (d *diskBucket) Lookup(ctx context.Context, id *object.ID) (*object.Metadat
 
 // Remove implements storage.Bucket.
 func (d *diskBucket) Remove(ctx context.Context, id *object.ID) error {
-	panic("unimplemented")
+	return d.indexdb.Delete(ctx, id.Bytes())
 }
 
 // Store implements storage.Bucket.
 func (d *diskBucket) Store(ctx context.Context, meta *object.Metadata) error {
-	// if log.Enabled(log.LevelDebug) {
-	// 	clog := log.Context(ctx)
+	if log.Enabled(log.LevelDebug) {
+		clog := log.Context(ctx)
 
-	// 	now := time.Now()
-	// 	defer func() {
-	// 		cost := time.Since(now)
+		now := time.Now()
+		defer func() {
+			cost := time.Since(now)
 
-	// 		clog.Debugf("save metadata %s, cost %s", meta.ID.WPath(d.opt.path), cost)
-	// 	}()
-	// }
+			clog.Debugf("store metadata %s, cost %s", meta.ID.WPath(d.path), cost)
+		}()
+	}
 
 	meta.Headers.Del("X-Protocol")
 	meta.Headers.Del("X-Protocol-Cache")
@@ -252,7 +327,7 @@ func (d *diskBucket) Allow() int {
 
 // Close implements storage.Bucket.
 func (d *diskBucket) Close() error {
-	panic("unimplemented")
+	return d.indexdb.Close()
 }
 
 func (d *diskBucket) initWorkdir() {
