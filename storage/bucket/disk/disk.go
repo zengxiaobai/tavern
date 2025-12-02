@@ -2,12 +2,15 @@ package disk
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/paulbellamy/ratecounter"
@@ -178,8 +181,8 @@ func (d *diskBucket) Iterate(ctx context.Context, fn func(*object.Metadata) erro
 
 // Lookup implements storage.Bucket.
 func (d *diskBucket) Lookup(ctx context.Context, id *object.ID) (*object.Metadata, error) {
-	// find indexdb metadata by cache-key
-	return &object.Metadata{}, nil
+	md, err := d.indexdb.Get(ctx, id.Bytes())
+	return md, err
 }
 
 // Remove implements storage.Bucket.
@@ -189,7 +192,26 @@ func (d *diskBucket) Remove(ctx context.Context, id *object.ID) error {
 
 // Store implements storage.Bucket.
 func (d *diskBucket) Store(ctx context.Context, meta *object.Metadata) error {
-	panic("unimplemented")
+	// if log.Enabled(log.LevelDebug) {
+	// 	clog := log.Context(ctx)
+
+	// 	now := time.Now()
+	// 	defer func() {
+	// 		cost := time.Since(now)
+
+	// 		clog.Debugf("save metadata %s, cost %s", meta.ID.WPath(d.opt.path), cost)
+	// 	}()
+	// }
+
+	meta.Headers.Del("X-Protocol")
+	meta.Headers.Del("X-Protocol-Cache")
+	meta.Headers.Del("X-Protocol-Request-Id")
+
+	if !d.cache.Has(meta.ID.Hash()) {
+		d.cache.Set(meta.ID.Hash(), storage.NewMark(meta.LastRefUnix, uint64(meta.Refs)))
+	}
+
+	return d.indexdb.Set(ctx, meta.ID.Bytes(), meta)
 }
 
 // HasBad implements storage.Bucket.
@@ -253,4 +275,15 @@ func formatSync(async bool) string {
 		return "async"
 	}
 	return "sync"
+}
+
+func IDPath(path string, id *object.ID) string {
+	hash := id.HashStr()
+	return filepath.Join(path, hash[0:1], hash[2:4], hash)
+}
+
+func IDPathRandomSuffix(path string) string {
+	buf := make([]byte, 16)
+	_, _ = rand.Read(buf)
+	return path + "_" + hex.EncodeToString(buf)
 }
