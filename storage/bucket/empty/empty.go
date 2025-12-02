@@ -92,6 +92,16 @@ func (e *emptyBucket) Weight() int {
 	panic("unimplemented")
 }
 
+// StoreType implements storage.Bucket.
+func (e *emptyBucket) StoreType() string {
+	return "empty"
+}
+
+// Type implements storage.Bucket.
+func (e *emptyBucket) Type() string {
+	return "empty"
+}
+
 func New(_ *conf.Bucket, _ storage.SharedKV) (storage.Bucket, error) {
 	return &emptyBucket{}, nil
 }

@@ -1,0 +1,39 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+)
+
+var (
+	flagPort int
+)
+
+func init() {
+	flag.IntVar(&flagPort, "p", 8000, "usage port")
+
+	log.SetPrefix(fmt.Sprintf("mockserver(%d): ", os.Getpid()))
+}
+
+func main() {
+	flag.Parse()
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("received request: %s %s", r.Method, r.URL.String())
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("hello world"))
+	})
+
+	addr := fmt.Sprintf(":%d", flagPort)
+
+	log.Printf("HTTP server listener on %s", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		return
+	}
+}

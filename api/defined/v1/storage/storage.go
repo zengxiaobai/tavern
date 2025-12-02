@@ -62,12 +62,16 @@ type Bucket interface {
 	UseAllow() bool
 	// HasBad returns whether the Bucket is in bad state.
 	HasBad() bool
+	// Type returns the Bucket type, empty memory native
+	Type() string
+	// StoreType returns the Bucket store-type, cold hot fastmemory
+	StoreType() string
 }
 
 type PurgeControl struct {
-	Hard        bool `json:"hard"`         // 是否硬删除, default: false
+	Hard        bool `json:"hard"`         // 是否硬删除, default: false 与 MarkExpired 冲突
 	Dir         bool `json:"dir"`          // 是否清理目录, default: false
-	MarkExpired bool `json:"mark_expired"` // 是否标记为过期, default: false
+	MarkExpired bool `json:"mark_expired"` // 是否标记为过期, default: false 与 Hard 冲突
 }
 
 var ErrSharedKVKeyNotFound = errors.New("key not found")

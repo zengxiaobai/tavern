@@ -73,6 +73,7 @@ func (pc *ProcessorChain) PostRequst(caching *Caching, req *http.Request, resp *
 
 func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, req *http.Request) (*Caching, error) {
 	caching := &Caching{
+		log:         log.Context(req.Context()),
 		proxyClient: proxyClient,
 		req:         req,
 		processor:   pc,

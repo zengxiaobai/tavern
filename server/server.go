@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cloudflare/tableflip"
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,6 +27,12 @@ var localMatcher = map[string]struct{}{
 	"localhost": {},
 	"127.1":     {},
 	"127.0.0.1": {},
+}
+var bufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
 }
 
 type MergeableConfig struct {
@@ -179,6 +188,27 @@ func (s *HTTPServer) buildEndpoint() (http.HandlerFunc, error) {
 	}
 
 	// add access-log handler
+	next = func(mw http.HandlerFunc) http.HandlerFunc {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var clog = log.Context(r.Context())
+
+			if r.URL.Scheme == "" {
+				r.URL.Scheme = "http"
+				if r.TLS != nil {
+					r.URL.Scheme = "https"
+				}
+			}
+			if r.URL.Host == "" {
+				r.URL.Host = r.Host
+			}
+
+			clog.Infof("started %s %s", r.Method, r.URL.Path)
+
+			mw(w, r)
+
+			clog.Infof("completed %s %s", r.Method, r.URL.Path)
+		})
+	}(next)
 
 	return next, nil
 }
@@ -204,6 +234,7 @@ func (s *HTTPServer) buildHandler(tripper http.RoundTripper) http.HandlerFunc {
 
 		doCopyBody := func() {
 			if resp.Body == nil {
+				clog.Infof("response body is nil")
 				return
 			}
 
@@ -212,6 +243,33 @@ func (s *HTTPServer) buildHandler(tripper http.RoundTripper) http.HandlerFunc {
 				return
 			}
 
+			buf := bufPool.Get().(*[]byte)
+			defer func() {
+				_ = resp.Body.Close()
+				bufPool.Put(buf)
+			}()
+
+			want := resp.Header.Get("Content-Length")
+
+			sent, err := io.CopyBuffer(w, resp.Body, *buf)
+			if err != nil {
+				// abort ? continue ?
+				clog.Errorf("failed to copy upstream response body to client: [%s] %s %s sent=%d want=%s err=%s", req.Proto, req.Method, req.URL.Path, sent, want, err)
+				return
+			}
+
+			if slices.Contains(resp.TransferEncoding, "chunked") || want == "" {
+				clog.Debugf("copied %d bytes chunked body from upstream to client", sent)
+				return
+			}
+
+			want1, _ := strconv.ParseInt(want, 10, 64)
+			if sent != want1 {
+				clog.Warnf("copied %d bytes from upstream to client, conflict Content-Length %s bytes", sent, want)
+				return
+			}
+
+			clog.Debugf("copied %d bytes from upstream to client, Content-Length %s bytes", sent, want)
 		}
 
 		doCopyBody()

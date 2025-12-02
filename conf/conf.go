@@ -13,6 +13,7 @@ type Bootstrap struct {
 	Server   *Server   `json:"server" yaml:"server"`
 	Plugin   []*Plugin `json:"plugin" yaml:"plugin"`
 	Upstream *Upstream `json:"upstream" yaml:"upstream"`
+	Storage  *Storage  `json:"storage" yaml:"storage"`
 }
 
 type Server struct {
@@ -26,14 +27,14 @@ type Server struct {
 }
 
 type Upstream struct {
-	Balancing           string   `json:"balancing" yaml:"balancing"`
-	Address             []string `json:"address" yaml:"address"`
-	MaxIdleConns        int      `json:"max_idle_conns" yaml:"max_idle_conns"`
-	MaxIdleConnsPerHost int      `json:"max_idle_conns_per_host" yaml:"max_idle_conns_per_host"`
-	MaxConnsPerServer   int      `json:"max_conns_per_server" yaml:"max_conns_per_server"`
-	InsecureSkipVerify  bool     `json:"insecure_skip_verify" yaml:"insecure_skip_verify"`
-	ResolveAddresses    bool     `json:"resolve_addresses" yaml:"resolve_addresses"`
-	Features            []string `json:"features" yaml:"features"`
+	Balancing           string         `json:"balancing" yaml:"balancing"`
+	Address             []string       `json:"address" yaml:"address"`
+	MaxIdleConns        int            `json:"max_idle_conns" yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost int            `json:"max_idle_conns_per_host" yaml:"max_idle_conns_per_host"`
+	MaxConnsPerServer   int            `json:"max_conns_per_server" yaml:"max_conns_per_server"`
+	InsecureSkipVerify  bool           `json:"insecure_skip_verify" yaml:"insecure_skip_verify"`
+	ResolveAddresses    bool           `json:"resolve_addresses" yaml:"resolve_addresses"`
+	Features            map[string]any `json:"features" yaml:"features"`
 }
 
 type Storage struct {
@@ -45,9 +46,12 @@ type Storage struct {
 }
 
 type Bucket struct {
-	Path string `json:"path" yaml:"path"`
-	Type string `json:"type" yaml:"type"`
+	Path   string `json:"path" yaml:"path"`     // local path or ?
+	Driver string `json:"driver" yaml:"driver"` // native, custom-driver
+	Type   string `json:"type" yaml:"type"`     // normal, cold, hot, fastmemory
 }
+
+type BucketOptions struct{}
 
 type Plugin struct {
 	Name    string         `json:"name" yaml:"name"`

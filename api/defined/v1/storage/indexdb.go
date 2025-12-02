@@ -2,11 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 
 	"github.com/omalloc/tavern/api/defined/v1/storage/object"
 	"github.com/omalloc/tavern/pkg/encoding"
 )
+
+var ErrKeyNotFound = errors.New("key not found")
 
 type IterateFunc func(key []byte, val *object.Metadata) bool
 

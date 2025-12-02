@@ -29,6 +29,7 @@ import (
 	_ "github.com/omalloc/tavern/server/middleware/caching"
 	_ "github.com/omalloc/tavern/server/middleware/recovery"
 	_ "github.com/omalloc/tavern/server/middleware/rewrite"
+	"github.com/omalloc/tavern/storage"
 )
 
 var (
@@ -104,6 +105,11 @@ func newApp(bc *conf.Bootstrap) (*kratos.App, error) {
 	}
 
 	// init storage
+	st, err := storage.New(bc.Storage, log.GetLogger())
+	if err != nil {
+		log.Fatalf("failed to initialize storage: %v", err)
+	}
+	storage.SetDefault(st)
 
 	// init upstream
 	nodes := make([]selector.Node, 0, len(bc.Upstream.Address))
@@ -113,6 +119,7 @@ func newApp(bc *conf.Bootstrap) (*kratos.App, error) {
 			log.Errorf("parsed upstream.address failed %v", err)
 			continue
 		}
+		log.Infof("add upstream scheme: %s, host: %s", u.Scheme, u.Host)
 		nodes = append(nodes, selector.NewNode(u.Scheme, u.Host, selector.RawMetadata("weight", "1")))
 	}
 	proxy.SetDefault(proxy.New(
