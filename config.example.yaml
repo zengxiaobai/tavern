@@ -4,9 +4,6 @@ logger:
   caller: true
   traceid: true
   nopid: true
-  encrypt:
-    enabled: false
-    secret: "123"
   path: ./logs/tavern.log
 server:
   addr: ":8080"
@@ -15,6 +12,9 @@ server:
   idle_timeout: 90s
   read_header_timeout: 30s
   max_header_bytes: 1048576 # 1MB
+  pprof:
+    username: "admin"
+    password: "password"
   middleware:
     - name: recovery
       options:
@@ -46,6 +46,12 @@ server:
           - "Cookie"
           - "Access-Control-Request-Headers"
           - "Access-Control-Request-Method"
+  access_log:
+    enabled: true
+    encrypt:
+      enabled: false
+      secret: "123"
+    path: ./logs/access.log
 plugin:
   - name: example-plugin
     options:

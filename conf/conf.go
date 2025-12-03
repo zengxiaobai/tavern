@@ -24,6 +24,22 @@ type Server struct {
 	ReadHeaderTimeout time.Duration              `json:"read_header_timeout" yaml:"read_header_timeout"`
 	MaxHeaderBytes    int                        `json:"max_header_bytes" yaml:"max_header_bytes"`
 	Middleware        []*middlewarev1.Middleware `json:"middleware" yaml:"middleware"`
+	PProf             *ServerPProf               `json:"pprof" yaml:"pprof"`
+	AccessLog         *ServerAccessLog           `json:"access_log" yaml:"access_log"`
+}
+
+type ServerPProf struct {
+	Username string `json:"username" yaml:"username"`
+	Password string `json:"password" yaml:"password"`
+}
+
+type ServerAccessLog struct {
+	Enabled bool   `json:"enabled" yaml:"enabled"`
+	Path    string `json:"path" yaml:"path"`
+	Encrypt struct {
+		Enabled bool   `json:"enabled" yaml:"enabled"`
+		Secret  string `json:"secret" yaml:"secret"`
+	} `json:"encrypt" yaml:"encrypt"`
 }
 
 type Upstream struct {
@@ -53,8 +69,6 @@ type Bucket struct {
 	DBType    string `json:"db_type" yaml:"db_type"`       // boltdb, badgerdb, pebble
 	AsyncLoad bool   `json:"async_load" yaml:"async_load"` // load metadata async
 }
-
-type BucketOptions struct{}
 
 type Plugin struct {
 	Name    string         `json:"name" yaml:"name"`

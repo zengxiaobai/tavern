@@ -1,0 +1,60 @@
+package metrics
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+	"time"
+
+	"github.com/omalloc/tavern/internal/constants"
+)
+
+type requestMetricKey struct{}
+
+type RequestMetric struct {
+	StartAt           time.Time
+	RequestID         string
+	RecvReq           uint64
+	SentResp          uint64
+	StoreUrl          string
+	CacheStatus       string
+	RemoteAddr        string
+	FirstResponseTime time.Time
+}
+
+func WithRequestMetric(req *http.Request) (*http.Request, *RequestMetric) {
+	metric := &RequestMetric{
+		StartAt:   time.Now(),
+		RequestID: MustParseRequestID(req.Header), // for example, generate a unique request ID. you can use ParseeaderRequestID to get it later.
+	}
+	return req.WithContext(newContext(req.Context(), metric)), metric
+}
+
+func FromContext(ctx context.Context) *RequestMetric {
+	if v, ok := ctx.Value(requestMetricKey{}).(*RequestMetric); ok {
+		return v
+	}
+	return &RequestMetric{}
+}
+
+func newContext(ctx context.Context, metric *RequestMetric) context.Context {
+	return context.WithValue(ctx, requestMetricKey{}, metric)
+}
+
+func MustParseRequestID(h http.Header) string {
+	id := h.Get(constants.ProtocolRequestIDKey)
+	// protocol request id header not found, generate a new one
+	if id == "" {
+		return generateRequestID()
+	}
+	return id
+}
+
+func generateRequestID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}

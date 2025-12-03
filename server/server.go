@@ -21,10 +21,10 @@ import (
 	"github.com/omalloc/tavern/contrib/log"
 	"github.com/omalloc/tavern/contrib/transport"
 	"github.com/omalloc/tavern/server/middleware"
-
 	_ "github.com/omalloc/tavern/server/middleware/caching"
 	_ "github.com/omalloc/tavern/server/middleware/recovery"
 	_ "github.com/omalloc/tavern/server/middleware/rewrite"
+	"github.com/omalloc/tavern/server/mod"
 )
 
 var localMatcher = map[string]struct{}{
@@ -39,18 +39,16 @@ var bufPool = sync.Pool{
 	},
 }
 
-type MergeableConfig struct {
-}
-
 type HTTPServer struct {
 	*http.Server
 
 	plugins []pluginv1.Plugin
 
-	flip     *tableflip.Upgrader
-	config   *conf.Bootstrap
-	listener net.Listener
-	cleanups []func()
+	flip         *tableflip.Upgrader
+	config       *conf.Bootstrap
+	serverConfig *conf.Server
+	listener     net.Listener
+	cleanups     []func()
 }
 
 func NewServer(flip *tableflip.Upgrader, config *conf.Bootstrap, plugins []pluginv1.Plugin) transport.Server {
@@ -65,9 +63,10 @@ func NewServer(flip *tableflip.Upgrader, config *conf.Bootstrap, plugins []plugi
 			ReadHeaderTimeout: servConfig.ReadHeaderTimeout,
 			MaxHeaderBytes:    servConfig.MaxHeaderBytes,
 		},
-		flip:     flip,
-		config:   config,
-		cleanups: make([]func(), 0),
+		flip:         flip,
+		config:       config,
+		serverConfig: config.Server,
+		cleanups:     make([]func(), 0),
 	}
 
 	// 初始化内部路由
@@ -146,9 +145,10 @@ func (s *HTTPServer) newServeMux() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// internal handlers
-	// TODO: profiles handler
-
 	mux.Handle("/favicon.ico", http.NotFoundHandler())
+	// profiles handler
+	mod.HandlePProf(s.serverConfig.PProf, mux)
+	// metrics
 	mux.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
 	}))
@@ -178,46 +178,7 @@ func (s *HTTPServer) newServeMux() *http.ServeMux {
 	return mux
 }
 
-func (s *HTTPServer) buildEndpoint() (http.HandlerFunc, error) {
-	tripper, err := s.buildMiddlewareChain(nil)
-	if err != nil {
-		return nil, err
-	}
-
-	next := s.buildHandler(tripper)
-
-	// Let plugins handle the request.
-	for _, plug := range s.plugins {
-		plug.HandleFunc(next)
-	}
-
-	// add access-log handler
-	next = func(mw http.HandlerFunc) http.HandlerFunc {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var clog = log.Context(r.Context())
-
-			if r.URL.Scheme == "" {
-				r.URL.Scheme = "http"
-				if r.TLS != nil {
-					r.URL.Scheme = "https"
-				}
-			}
-			if r.URL.Host == "" {
-				r.URL.Host = r.Host
-			}
-
-			clog.Infof("started %s %s", r.Method, r.URL.Path)
-
-			mw(w, r)
-
-			clog.Infof("completed %s %s", r.Method, r.URL.Path)
-		})
-	}(next)
-
-	return next, nil
-}
-
-// Cache 主流程入口
+// buildHandler ... Cache 主流程入口
 func (s *HTTPServer) buildHandler(tripper http.RoundTripper) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		var clog = log.Context(req.Context())
@@ -278,6 +239,24 @@ func (s *HTTPServer) buildHandler(tripper http.RoundTripper) http.HandlerFunc {
 
 		doCopyBody()
 	}
+}
+
+func (s *HTTPServer) buildEndpoint() (http.HandlerFunc, error) {
+	tripper, err := s.buildMiddlewareChain(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// build the final handler
+	next := s.buildHandler(tripper)
+
+	// Let plugins handle the request.
+	for _, plug := range s.plugins {
+		plug.HandleFunc(next)
+	}
+
+	// add access-log handler
+	return mod.HandleAccessLog(s.serverConfig.AccessLog, next), nil
 }
 
 func (s *HTTPServer) buildMiddlewareChain(tripper http.RoundTripper) (http.RoundTripper, error) {
