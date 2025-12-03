@@ -26,9 +26,6 @@ import (
 	_ "github.com/omalloc/tavern/plugin/example"
 	"github.com/omalloc/tavern/proxy"
 	"github.com/omalloc/tavern/server"
-	_ "github.com/omalloc/tavern/server/middleware/caching"
-	_ "github.com/omalloc/tavern/server/middleware/recovery"
-	_ "github.com/omalloc/tavern/server/middleware/rewrite"
 	"github.com/omalloc/tavern/storage"
 )
 

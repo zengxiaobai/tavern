@@ -21,6 +21,10 @@ import (
 	"github.com/omalloc/tavern/contrib/log"
 	"github.com/omalloc/tavern/contrib/transport"
 	"github.com/omalloc/tavern/server/middleware"
+
+	_ "github.com/omalloc/tavern/server/middleware/caching"
+	_ "github.com/omalloc/tavern/server/middleware/recovery"
+	_ "github.com/omalloc/tavern/server/middleware/rewrite"
 )
 
 var localMatcher = map[string]struct{}{
