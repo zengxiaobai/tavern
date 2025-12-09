@@ -102,6 +102,10 @@ func (e *emptyBucket) Type() string {
 	return "empty"
 }
 
+func (e *emptyBucket) Path() string {
+	return "/dev/null"
+}
+
 func New(_ *conf.Bucket, _ storage.SharedKV) (storage.Bucket, error) {
 	return &emptyBucket{}, nil
 }

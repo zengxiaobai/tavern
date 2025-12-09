@@ -325,6 +325,10 @@ func (d *diskBucket) Allow() int {
 	panic("unimplemented")
 }
 
+func (d *diskBucket) Path() string {
+	return d.path
+}
+
 // Close implements storage.Bucket.
 func (d *diskBucket) Close() error {
 	return d.indexdb.Close()

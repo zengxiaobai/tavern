@@ -66,6 +66,8 @@ type Bucket interface {
 	Type() string
 	// StoreType returns the Bucket store-type, cold hot fastmemory
 	StoreType() string
+	// Path returns the Bucket path.
+	Path() string
 }
 
 type PurgeControl struct {

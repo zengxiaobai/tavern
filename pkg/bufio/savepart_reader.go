@@ -135,15 +135,16 @@ func (s *savepartReader) writeBlock(eof bool) error {
 	return nil
 }
 
-func SavepartReader(r io.ReadCloser, flushBuffer EventSuccess, cleanup EventClose) io.ReadCloser {
+func SavepartReader(r io.ReadCloser, blockSize int,
+	flushBuffer EventSuccess, flushFailed EventError, cleanup EventClose) io.ReadCloser {
 	return &savepartReader{
 		R: r,
 
 		skip:      true,
+		blockSize: uint64(blockSize),
 		onSuccess: flushBuffer,
-		onError: func(err error) {
-			// TODO: check err
-		},
-		onClose: cleanup,
+		onError:   flushFailed,
+		onClose:   cleanup,
+		buf:       bytes.NewBuffer(make([]byte, 0, blockSize)),
 	}
 }

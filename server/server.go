@@ -23,6 +23,7 @@ import (
 	xhttp "github.com/omalloc/tavern/pkg/x/http"
 	"github.com/omalloc/tavern/server/middleware"
 	_ "github.com/omalloc/tavern/server/middleware/caching"
+	_ "github.com/omalloc/tavern/server/middleware/multirange"
 	_ "github.com/omalloc/tavern/server/middleware/recovery"
 	_ "github.com/omalloc/tavern/server/middleware/rewrite"
 	"github.com/omalloc/tavern/server/mod"

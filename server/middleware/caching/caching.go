@@ -20,7 +20,17 @@ import (
 	"github.com/omalloc/tavern/server/middleware"
 )
 
-type cachingOption struct{}
+const BitBlock = 1 << 15
+
+type cachingOption struct {
+	IncludeQueryInCacheKey  bool     `json:"include_query_in_cache_key" yaml:"include_query_in_cache_key"`
+	FuzzyRefresh            bool     `json:"fuzzy_refresh" yaml:"fuzzy_refresh"`
+	FuzzyRefreshRate        float64  `json:"fuzzy_refresh_rate" yaml:"fuzzy_refresh_rate"`
+	CollapsedRequest        bool     `json:"collapsed_request" yaml:"collapsed_request"`
+	CollapsedRequestTimeout string   `json:"collapsed_request_timeout" yaml:"collapsed_request_timeout"`
+	VaryLimit               int      `json:"vary_limit" yaml:"vary_limit"`
+	VaryIgnoreKey           []string `json:"vary_ignore_key" yaml:"vary_ignore_key"`
+}
 
 func init() {
 	middleware.Register("caching", Middleware)
@@ -109,7 +119,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 		c.log.Debugf("doProxy resp dump: \n%s\n", string(buf))
 	}
 
-	var upstreamErr error
+	var proxyErr error
 
 	// handle redirect caching
 	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusMovedPermanently {
@@ -128,7 +138,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 	// handle error response
 	if resp.StatusCode >= http.StatusBadRequest {
 		if c.md != nil && !c.refresh {
-			upstreamErr = fmt.Errorf("upstream returns error status: %d", resp.StatusCode)
+			proxyErr = fmt.Errorf("upstream returns error status: %d", resp.StatusCode)
 		}
 	}
 
@@ -191,7 +201,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 		flushBuffer, cleanup := c.flushbuffer(respRange)
 
 		// save body stream to bucket(disk).
-		resp.Body = bufio.SavepartReader(resp.Body, flushBuffer, cleanup)
+		resp.Body = bufio.SavepartReader(resp.Body, BitBlock, flushBuffer, c.flushFailed, cleanup)
 	}
 
 	resp, err = c.processor.PostRequst(c, proxyReq, resp)
@@ -210,7 +220,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 	}
 
 	c.log.Debugf("doProxy end %s %q code: %d %s", proxyReq.Method, proxyReq.URL.String(), resp.StatusCode, respRange.String())
-	return resp, upstreamErr
+	return resp, proxyErr
 }
 
 // flushbuffer returns flush cache file to bucket callback
@@ -219,13 +229,42 @@ func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (bufio.EventSuccess
 	// chunked encoding when object size unknown, waiting for Read io.EOF
 	chunked := respRange.ObjSize <= 0
 
+	// MAX_FILE_SIZE / PART_SIZE
+	// PART_SIZE -> bitmap block_size
+
+	endPart := func() uint32 {
+		epart := uint32(respRange.ObjSize / BitBlock)
+		if respRange.ObjSize%BitBlock > 0 {
+			epart++
+		}
+		return epart
+	}()
+
+	getOffset := func(partIdx uint32) int64 {
+		point := partIdx * BitBlock
+		if partIdx == 0 {
+			point = 0
+		}
+		return int64(point)
+	}
+
 	c.log.Debugf("flushbuffer now. chunked %t", chunked)
 	cleanup := func(eof bool) {
 		// TODO: close opened file.
 	}
 
+	// TODO: global resource lock.
+	// c.Lock()
+	// defer c.Unlock()
+
 	// write file.
 	writeBuffer := func(buf []byte, bitIdx uint32, pos uint64, eof bool) error {
+		wpath := c.id.WPath(c.bucket.Path())
+		offset := getOffset(bitIdx)
+
+		// TODO: write buf to `wpath` file at offset
+
+		c.log.Debugf("flushBuffer wpath: %s, chunked: %t, endPart: %d current offset %d", wpath, chunked, endPart, offset)
 		return nil
 	}
 
