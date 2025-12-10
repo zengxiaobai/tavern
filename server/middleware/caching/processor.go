@@ -73,8 +73,8 @@ func (pc *ProcessorChain) PostRequst(caching *Caching, req *http.Request, resp *
 	return resp, nil
 }
 
-func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, req *http.Request) (*Caching, error) {
-	id, err := newObjectIDFromRequest(req, "", false)
+func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, opt *cachingOption, req *http.Request) (*Caching, error) {
+	id, err := newObjectIDFromRequest(req, "", opt.IncludeQueryInCacheKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed new object-id from request err: %w", err)
 	}
@@ -86,6 +86,7 @@ func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, req *http.R
 	caching := &Caching{
 		log:         log.Context(req.Context()),
 		proxyClient: proxyClient,
+		opt:         opt,
 		id:          id,
 		bucket:      bucket,
 		req:         req,

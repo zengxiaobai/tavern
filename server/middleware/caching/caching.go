@@ -1,11 +1,15 @@
 package caching
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/kelindar/bitmap"
@@ -14,7 +18,7 @@ import (
 	"github.com/omalloc/tavern/api/defined/v1/storage"
 	"github.com/omalloc/tavern/api/defined/v1/storage/object"
 	"github.com/omalloc/tavern/contrib/log"
-	"github.com/omalloc/tavern/pkg/bufio"
+	"github.com/omalloc/tavern/pkg/iobuf"
 	xhttp "github.com/omalloc/tavern/pkg/x/http"
 	"github.com/omalloc/tavern/proxy"
 	"github.com/omalloc/tavern/server/middleware"
@@ -37,8 +41,8 @@ func init() {
 }
 
 func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
-	var opts cachingOption
-	if err := c.Unmarshal(&opts); err != nil {
+	opts := new(cachingOption)
+	if err := c.Unmarshal(opts); err != nil {
 		return nil, middleware.EmptyCleanup, err
 	}
 
@@ -52,7 +56,7 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 
 		return middleware.RoundTripperFunc(func(req *http.Request) (resp *http.Response, err error) {
 			// find indexdb cache-key has hit/miss.
-			caching, err := processor.preCacheProcessor(proxyClient, req)
+			caching, err := processor.preCacheProcessor(proxyClient, opts, req)
 			// err to BYPASS caching
 			if err != nil {
 				caching.log.Warnf("caching find failed: %v BYPASS", err)
@@ -79,6 +83,7 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 type Caching struct {
 	log         *log.Helper
 	processor   *ProcessorChain
+	opt         *cachingOption
 	req         *http.Request
 	id          *object.ID
 	md          *object.Metadata
@@ -201,7 +206,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 		flushBuffer, cleanup := c.flushbuffer(respRange)
 
 		// save body stream to bucket(disk).
-		resp.Body = bufio.SavepartReader(resp.Body, BitBlock, flushBuffer, c.flushFailed, cleanup)
+		resp.Body = iobuf.SavepartReader(resp.Body, BitBlock, 0, flushBuffer, c.flushFailed, cleanup)
 	}
 
 	resp, err = c.processor.PostRequst(c, proxyReq, resp)
@@ -224,7 +229,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 }
 
 // flushbuffer returns flush cache file to bucket callback
-func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (bufio.EventSuccess, bufio.EventClose) {
+func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (iobuf.EventSuccess, iobuf.EventClose) {
 	// is chunked encoding
 	// chunked encoding when object size unknown, waiting for Read io.EOF
 	chunked := respRange.ObjSize <= 0
@@ -249,8 +254,29 @@ func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (bufio.EventSuccess
 	}
 
 	c.log.Debugf("flushbuffer now. chunked %t", chunked)
+
+	wpath := c.id.WPath(c.bucket.Path())
+
+	c.log.Debugf("wpath = %s", filepath.Dir(wpath))
+	if err := os.MkdirAll(filepath.Dir(wpath), 0o755); err != nil {
+		c.log.Debugf("mkdir fail %s", err)
+	}
+
+	w := bufio.NewWriter(io.Discard)
+	f, err := os.OpenFile(wpath, os.O_CREATE|os.O_RDWR, 0o755)
+	if err == nil {
+		w = bufio.NewWriter(f)
+	} else {
+		log.Warnf("open-file failed err %s", err)
+	}
+
 	cleanup := func(eof bool) {
 		// TODO: close opened file.
+		if f != nil {
+			if err1 := f.Close(); err1 != nil {
+				log.Warnf("close open-file failed err %s", err1)
+			}
+		}
 	}
 
 	// TODO: global resource lock.
@@ -259,12 +285,20 @@ func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (bufio.EventSuccess
 
 	// write file.
 	writeBuffer := func(buf []byte, bitIdx uint32, pos uint64, eof bool) error {
-		wpath := c.id.WPath(c.bucket.Path())
 		offset := getOffset(bitIdx)
 
 		// TODO: write buf to `wpath` file at offset
+		nn, err := w.Write(buf)
+		if err != nil {
+			return fmt.Errorf("writeBuffer failed err %w", err)
+		}
 
-		c.log.Debugf("flushBuffer wpath: %s, chunked: %t, endPart: %d current offset %d", wpath, chunked, endPart, offset)
+		if eof {
+			// if endPart == uint32() {}
+			_ = w.Flush()
+		}
+
+		c.log.Debugf("flushBuffer %s, curPart: %d endPart: %d, offset %d, write bufsize %d", wpath, bitIdx, endPart, offset, nn)
 		return nil
 	}
 

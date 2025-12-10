@@ -1,4 +1,4 @@
-package bufio
+package iobuf
 
 import (
 	"bytes"
@@ -36,14 +36,19 @@ func (s *savepartReader) Read(p []byte) (n int, err error) {
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			// flush buffer on EOF
+			if err = s.flush(p, n, true); err != nil {
+				s.onError(err)
+			}
 			return n, io.EOF
 		}
 
 		// trigger event error
+		s.onError(err)
 		return 0, err
 	}
 
 	if err = s.flush(p, n, false); err != nil {
+		s.onError(err)
 		return
 	}
 	return
@@ -60,7 +65,6 @@ func (s *savepartReader) Close() error {
 func (s *savepartReader) flush(data []byte, realLen int, eof bool) error {
 	datalen := uint64(realLen)
 	datapos := uint64(0)
-
 	remaining := datalen
 
 	for remaining > 0 {
@@ -76,7 +80,7 @@ func (s *savepartReader) flush(data []byte, realLen int, eof bool) error {
 			if from != 0 {
 				skip := min(to, remaining)
 				datapos += skip
-				remaining -= datalen - datapos
+				remaining = datalen - datapos
 				s.pos += skip
 				continue
 			}
@@ -87,7 +91,6 @@ func (s *savepartReader) flush(data []byte, realLen int, eof bool) error {
 		// full block writenow
 		if uint64(s.buf.Len()) == s.blockSize {
 			if err := s.writeBlock(eof); err != nil {
-				s.onError(err)
 				return err
 			}
 		}
@@ -97,11 +100,10 @@ func (s *savepartReader) flush(data []byte, realLen int, eof bool) error {
 
 		s.buf.Write(data[datapos : datapos+tow])
 		if oldBufLen+tow != uint64(s.buf.Len()) {
-			err1 := fmt.Errorf("partial copy - expected buffer len to be %d but it is %d",
+			return fmt.Errorf("partial copy - expected buffer len to be %d but it is %d",
 				oldBufLen+tow, s.buf.Len())
-			s.onError(err1)
-			return err1
 		}
+
 		datapos += tow
 		s.pos += tow
 		remaining = datalen - datapos
@@ -109,7 +111,6 @@ func (s *savepartReader) flush(data []byte, realLen int, eof bool) error {
 
 	if eof && remaining == 0 {
 		if err := s.writeBlock(eof); err != nil {
-			s.onError(err)
 			return err
 		}
 	}
@@ -129,18 +130,25 @@ func (s *savepartReader) writeBlock(eof bool) error {
 	mod := uint32((s.pos - buflen) / s.blockSize)
 
 	// trigger event success
-	s.onSuccess(s.buf.Bytes(), mod, s.pos, eof)
+	if err := s.onSuccess(s.buf.Bytes(), mod, s.pos, eof); err != nil {
+		return fmt.Errorf("savepart_onSuccess err %w", err)
+	}
 
 	s.buf.Reset()
 	return nil
 }
 
-func SavepartReader(r io.ReadCloser, blockSize int,
+func SavepartReader(r io.ReadCloser, blockSize int, startAt int,
 	flushBuffer EventSuccess, flushFailed EventError, cleanup EventClose) io.ReadCloser {
+	skip := false
+	if startAt > 0 {
+		skip = true
+	}
 	return &savepartReader{
 		R: r,
 
-		skip:      true,
+		skip:      skip,
+		pos:       uint64(startAt),
 		blockSize: uint64(blockSize),
 		onSuccess: flushBuffer,
 		onError:   flushFailed,
