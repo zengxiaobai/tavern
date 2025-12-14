@@ -440,7 +440,7 @@ func (c *Caching) flushbuffer(respRange xhttp.ContentRange) (iobuf.EventSuccess,
 			}
 		}
 
-		c.log.Debugf("flushBuffer %s, curPart: %d endPart: %d, offset %d, write bufsize %d", wpath, bitIdx, endPart, offset, nn)
+		//c.log.Debugf("flushBuffer %s, curPart: %d endPart: %d, offset %d, write bufsize %d", wpath, bitIdx, endPart, offset, n)
 		return nil
 	}
 
