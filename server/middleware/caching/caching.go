@@ -2,6 +2,7 @@ package caching
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -105,9 +106,7 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 				resp, err = caching.lazilyRespond(req, rng.Start, rng.End)
 				if err != nil {
 					// fd leak
-					if resp != nil && resp.Body != nil {
-						_ = resp.Body.Close()
-					}
+					closeBody(resp)
 					return nil, err
 				}
 
@@ -229,7 +228,44 @@ func (c *Caching) lazilyRespond(req *http.Request, start, end int64) (*http.Resp
 }
 
 func (c *Caching) getUpstreamReader(fromByte, toByte uint64, async bool) (io.ReadCloser, error) {
-	return nil, errors.New("not implement")
+	// get from origin request header
+	rawRange := c.req.Header.Get("Range")
+	newRange := fmt.Sprintf("bytes=%d-%d", fromByte, toByte)
+	req := c.req.Clone(context.Background())
+	req.Header.Set("Range", newRange)
+	// add request-id [range]
+	// req.Header.Set("X-Request-ID", fmt.Sprintf("%s-%d", req.Header.Get(appctx.ProtocolRequestIDKey), fromByte)) // 附加 Request-ID suffix
+	// TODO: remove all internal header
+	req.Header.Del(constants.ProtocolCacheStatusKey)
+
+	doSubRequest := func() (*http.Response, error) {
+		now := time.Now()
+		c.log.Debugf("getUpstreamReader doProxy[part]: begin: %s, rawRange: %s, newRange: %s", now, rawRange, newRange)
+		resp, err := c.doProxy(req, true)
+		c.log.Infof("getUpstreamReader doProxy[part]: timeCost: %s, rawRange: %s, newRange: %s", time.Since(now), rawRange, newRange)
+		if err != nil {
+			closeBody(resp)
+			return nil, err
+		}
+		// 部分命中
+		c.cacheStatus = storage.CachePartHit
+		// 发起的是 206 请求，但是返回的非 206
+		if resp.StatusCode != http.StatusPartialContent {
+			c.log.Warnf("getUpstreamReader doProxy[part]: status code: %d, bod size: %d", resp.StatusCode, resp.ContentLength)
+			return resp, xhttp.NewBizError(resp.StatusCode, resp.Header)
+		}
+		return resp, nil
+	}
+
+	if async {
+		return iobuf.AsyncReadCloser(doSubRequest), nil
+	}
+
+	resp, err := doSubRequest()
+	if resp != nil {
+		return resp.Body, err
+	}
+	return nil, err
 }
 
 func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, error) {
@@ -543,4 +579,10 @@ func newObjectIDFromRequest(req *http.Request, vd string, includeQuery bool) (*o
 	}
 
 	return object.NewVirtualID(fmt.Sprintf("%s://%s%s", req.URL.Scheme, req.Host, req.URL.Path), vd), nil
+}
+
+func closeBody(resp *http.Response) {
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 }
