@@ -82,6 +82,8 @@ func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, opt *cachin
 	// Select storage bucket by object ID
 	// hashring or diskhash
 	bucket := storage.Select(req.Context(), id)
+	// lookup cache with cache-key
+	md, _ := bucket.Lookup(req.Context(), id)
 
 	caching := &Caching{
 		log:         log.Context(req.Context()),
@@ -90,8 +92,15 @@ func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, opt *cachin
 		id:          id,
 		bucket:      bucket,
 		req:         req,
+		md:          md,
 		processor:   pc,
 	}
+
+	hit, err := pc.Lookup(caching, req)
+	if err != nil {
+		caching.log.Errorf("failed lookup cache err: %v", err)
+	}
+	caching.hit = hit
 
 	return caching, nil
 }

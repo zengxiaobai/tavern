@@ -25,9 +25,9 @@ var (
 )
 
 var (
-	parser = NewUnsatisfiableParser()
-	Parse = parser.Parse
-	SingleParse = parser.SingleParse
+	parser      = NewUnsatisfiableParser()
+	Parse       = parser.Parse
+	SingleRange = parser.SingleParse
 )
 
 type Range struct {
@@ -190,7 +190,7 @@ func (u *unsatisfiableParser) Parse(header string, size uint64) ([]*Range, error
 	return ranges, nil
 }
 
-// SingleParse implements Parser.
+// SingleRange implements Parser.
 func (u *unsatisfiableParser) SingleParse(header string, size uint64) (*Range, error) {
 	rngs, err := u.Parse(header, size)
 	if err != nil && errors.Is(err, ErrRangeHeaderNotFound) {
@@ -217,8 +217,8 @@ func NewUnsatisfiableParser() Parser {
 }
 
 // ParseContentRange parses the Content-Range header from an HTTP response.
-func ParseContentRange(header http.Header) (*ContentRange, error) {
-	cr := &ContentRange{}
+func ParseContentRange(header http.Header) (ContentRange, error) {
+	cr := ContentRange{}
 
 	contentRange := header.Get("Content-Range")
 

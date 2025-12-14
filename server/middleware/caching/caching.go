@@ -26,6 +26,8 @@ import (
 
 const BitBlock = 1 << 15
 
+var fileMode = os.O_RDONLY | 0o1000000 // O_NOATIME
+
 type cachingOption struct {
 	IncludeQueryInCacheKey  bool     `json:"include_query_in_cache_key" yaml:"include_query_in_cache_key"`
 	FuzzyRefresh            bool     `json:"fuzzy_refresh" yaml:"fuzzy_refresh"`
@@ -65,15 +67,35 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 
 			// cache HIT
 			if caching.hit {
-				resp, err = caching.responseCache(req)
+				rng, err1 := xhttp.SingleRange(req.Header.Get("Range"), caching.md.Size)
+				if err1 != nil {
+					// 无效 Range 处理
+					headers := make(http.Header)
+					xhttp.CopyHeader(caching.md.Headers, headers)
+					headers.Set("Content-Range", fmt.Sprintf("bytes */%d", caching.md.Size))
+					return nil, xhttp.NewBizError(http.StatusRequestedRangeNotSatisfiable, headers)
+				}
+				// TODO: mark x-cache status
+
+				// find file seek(start, end)
+				resp, err = caching.responseCache(req, rng.Start, rng.End)
+				if err != nil {
+					// fd leak
+					if resp != nil && resp.Body != nil {
+						_ = resp.Body.Close()
+					}
+					return nil, err
+				}
+
+				// response now
+				resp, err = caching.processor.postCacheProcessor(caching, req, resp)
 				return
 			}
 
 			// full MISS
 			resp, err = caching.doProxy(req, false)
 
-			processor.postCacheProcessor(caching, req, resp)
-
+			resp, err = processor.postCacheProcessor(caching, req, resp)
 			return
 		})
 
@@ -97,8 +119,11 @@ type Caching struct {
 	noContentLen bool
 }
 
-func (c *Caching) responseCache(req *http.Request) (*http.Response, error) {
+func (c *Caching) responseCache(req *http.Request, start, end int64) (*http.Response, error) {
 	// find disk cache file and return Body
+
+	// check
+
 	return nil, nil
 }
 
@@ -229,7 +254,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 }
 
 // flushbuffer returns flush cache file to bucket callback
-func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (iobuf.EventSuccess, iobuf.EventClose) {
+func (c *Caching) flushbuffer(respRange xhttp.ContentRange) (iobuf.EventSuccess, iobuf.EventClose) {
 	// is chunked encoding
 	// chunked encoding when object size unknown, waiting for Read io.EOF
 	chunked := respRange.ObjSize <= 0
@@ -257,7 +282,6 @@ func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (iobuf.EventSuccess
 
 	wpath := c.id.WPath(c.bucket.Path())
 
-	c.log.Debugf("wpath = %s", filepath.Dir(wpath))
 	if err := os.MkdirAll(filepath.Dir(wpath), 0o755); err != nil {
 		c.log.Debugf("mkdir fail %s", err)
 	}
@@ -271,12 +295,7 @@ func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (iobuf.EventSuccess
 	}
 
 	cleanup := func(eof bool) {
-		// TODO: close opened file.
-		if f != nil {
-			if err1 := f.Close(); err1 != nil {
-				log.Warnf("close open-file failed err %s", err1)
-			}
-		}
+		_ = c.bucket.Store(c.req.Context(), c.md)
 	}
 
 	// TODO: global resource lock.
@@ -284,21 +303,39 @@ func (c *Caching) flushbuffer(respRange *xhttp.ContentRange) (iobuf.EventSuccess
 	// defer c.Unlock()
 
 	// write file.
-	writeBuffer := func(buf []byte, bitIdx uint32, pos uint64, eof bool) error {
-		offset := getOffset(bitIdx)
-
-		// TODO: write buf to `wpath` file at offset
-		nn, err := w.Write(buf)
-		if err != nil {
-			return fmt.Errorf("writeBuffer failed err %w", err)
+	writeBuffer := func(buf []byte, bitIdx uint32, current uint64, eof bool) error {
+		if chunked {
+			c.md.Size = current
+			c.md.Headers.Set("Content-Length", fmt.Sprintf("%d", current))
+		} else if uint64(len(buf)) != BitBlock && current != respRange.ObjSize {
+			c.log.Debugf("part[%d] is not complete, want end-part [%d] ", bitIdx+1, endPart)
+			return nil
 		}
+
+		offset := getOffset(bitIdx)
+		if offset > 0 {
+			// write buf to `wpath` file at offset
+			if _, err = f.Seek(offset, io.SeekStart); err != nil {
+				return err
+			}
+		}
+
+		if nn, err1 := w.Write(buf); err1 != nil || nn != len(buf) {
+			return fmt.Errorf("writeBuffer part[%d] failed err %w", bitIdx, err)
+		}
+		c.md.Parts.Set(bitIdx)
 
 		if eof {
-			// if endPart == uint32() {}
-			_ = w.Flush()
+			if endPart == uint32(c.md.Parts.Count()) {
+				c.log.Debugf("file all part complete at %s", time.Now().Format(time.DateTime))
+				_ = w.Flush()
+
+				// TODO: trigger file crc check
+				// ...
+			}
 		}
 
-		c.log.Debugf("flushBuffer %s, curPart: %d endPart: %d, offset %d, write bufsize %d", wpath, bitIdx, endPart, offset, nn)
+		//c.log.Debugf("flushBuffer %s, curPart: %d endPart: %d, offset %d, write bufsize %d", wpath, bitIdx, endPart, offset, nn)
 		return nil
 	}
 
@@ -343,4 +380,8 @@ func newObjectIDFromRequest(req *http.Request, vd string, includeQuery bool) (*o
 	}
 
 	return object.NewVirtualID(fmt.Sprintf("%s://%s%s", req.URL.Scheme, req.Host, req.URL.Path), vd), nil
+}
+
+func ropen(wpath string) (*os.File, error) {
+	return os.OpenFile(wpath, fileMode, 0o755)
 }
