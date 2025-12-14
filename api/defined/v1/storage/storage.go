@@ -135,3 +135,42 @@ func (m *Mark) SetRefs(refs uint64) {
 	*m &^= RefsMask
 	*m |= Mark(refs)
 }
+
+type CacheStatus int
+
+const (
+	// CacheMiss indicates the absence of a cached resource.
+	CacheMiss CacheStatus = iota + 1
+	// CacheHit indicates the presence of a cached resource.
+	CacheHit
+	// CacheParentHit indicates the cache hit occurred in a parent cache layer.
+	CacheParentHit
+	// CachePartHit indicates a partial cache hit for a range request.
+	CachePartHit
+	// CacheRevalidateHit indicates a hit after cache validation with the origin server.
+	CacheRevalidateHit
+	// CacheRevalidateMiss indicates a miss after cache validation with the origin server.
+	CacheRevalidateMiss
+	// CachePartMiss indicates only non-range parts of a resource are cached, requiring origin fetch for range requests.
+	CachePartMiss
+	// CacheHotHit indicates a hit from a hot/fast-access cache layer.
+	CacheHotHit
+	// BYPASS indicates the request bypassed the cache entirely.
+	BYPASS
+)
+
+var cacheStatusMap = map[CacheStatus]string{
+	CacheMiss:           "MISS",
+	CacheHit:            "HIT",
+	CacheParentHit:      "PARENT_HIT",
+	CacheRevalidateHit:  "REVALIDATE_HIT",
+	CacheRevalidateMiss: "REVALIDATE_MISS",
+	CachePartHit:        "PART_HIT",
+	CachePartMiss:       "PART_MISS",
+	CacheHotHit:         "HOT_HIT",
+	BYPASS:              "BYPASS",
+}
+
+func (r CacheStatus) String() string {
+	return cacheStatusMap[r]
+}

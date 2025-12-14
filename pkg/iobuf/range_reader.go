@@ -2,6 +2,7 @@ package iobuf
 
 import "io"
 
+// rangeReader is a type that implements io.ReadCloser and provides reading within specified byte range boundaries.
 type rangeReader struct {
 	R        io.ReadCloser
 	newStart int
@@ -11,6 +12,7 @@ type rangeReader struct {
 	offset   int
 }
 
+// RangeReader returns a ReadCloser that reads a specified byte range from an underlying ReadCloser.
 func RangeReader(r io.ReadCloser, newStart int, newEnd int, rawStart int, rawEnd int) io.ReadCloser {
 	return &rangeReader{
 		R:        r,
@@ -22,6 +24,9 @@ func RangeReader(r io.ReadCloser, newStart int, newEnd int, rawStart int, rawEnd
 	}
 }
 
+// Read reads up to len(p) bytes into p from the underlying stream within the configured range boundaries.
+// Skips data before the rawStart offset and discards any data outside the specified range.
+// Returns the number of bytes read and an error, if any.
 func (r *rangeReader) Read(p []byte) (int, error) {
 	// skip to rawStart
 	if r.offset < r.rawStart {
@@ -59,6 +64,7 @@ func (r *rangeReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Close closes the underlying io.ReadCloser and releases any resources associated with it.
 func (r *rangeReader) Close() error {
 	return r.R.Close()
 }

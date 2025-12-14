@@ -5,8 +5,11 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
+	storagev1 "github.com/omalloc/tavern/api/defined/v1/storage"
 	"github.com/omalloc/tavern/contrib/log"
 	"github.com/omalloc/tavern/proxy"
 	"github.com/omalloc/tavern/storage"
@@ -31,11 +34,16 @@ func (pc *ProcessorChain) Lookup(caching *Caching, req *http.Request) (bool, err
 	for _, processor := range *pc {
 		caching.hit, err = processor.Lookup(caching, req)
 		if err != nil {
+			return false, err
+		}
+
+		if !caching.hit {
+			// TIPS: PRINT DEBUG CODE
 			if caching.log.Enabled(log.LevelDebug) {
 				typeof := reflect.TypeOf(processor).Elem()
 				caching.log.Debugf("%s.Lookup() result %t", typeof.Name(), caching.hit)
 			}
-			return false, err
+			return false, nil
 		}
 	}
 	return true, nil
@@ -74,26 +82,27 @@ func (pc *ProcessorChain) PostRequst(caching *Caching, req *http.Request, resp *
 }
 
 func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, opt *cachingOption, req *http.Request) (*Caching, error) {
-	id, err := newObjectIDFromRequest(req, "", opt.IncludeQueryInCacheKey)
+	objectID, err := newObjectIDFromRequest(req, "", opt.IncludeQueryInCacheKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed new object-id from request err: %w", err)
+		return nil, fmt.Errorf("failed new object-objectID from request err: %w", err)
 	}
 
 	// Select storage bucket by object ID
 	// hashring or diskhash
-	bucket := storage.Select(req.Context(), id)
+	bucket := storage.Select(req.Context(), objectID)
 	// lookup cache with cache-key
-	md, _ := bucket.Lookup(req.Context(), id)
+	md, _ := bucket.Lookup(req.Context(), objectID)
 
 	caching := &Caching{
 		log:         log.Context(req.Context()),
 		proxyClient: proxyClient,
 		opt:         opt,
-		id:          id,
+		id:          objectID,
 		bucket:      bucket,
 		req:         req,
 		md:          md,
 		processor:   pc,
+		cacheStatus: storagev1.CacheMiss,
 	}
 
 	hit, err := pc.Lookup(caching, req)
@@ -105,9 +114,14 @@ func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, opt *cachin
 	return caching, nil
 }
 
-func (pc *ProcessorChain) postCacheProcessor(caching *Caching, req *http.Request, resp *http.Response) (*http.Response, error) {
-	// TODO: add response processing logic
-	// TODO: add X-Cache headers
+func (pc *ProcessorChain) postCacheProcessor(caching *Caching, _ *http.Request, resp *http.Response) (*http.Response, error) {
+	caching.setXCache(resp)
+
+	if resp != nil && resp.Header != nil && caching.md != nil {
+		resp.Header.Set("Age", strconv.FormatInt(time.Now().Unix()-caching.md.RespUnix, 10))
+		resp.Header.Set("Expires", time.Unix(caching.md.ExpiresAt, 0).UTC().Format(http.TimeFormat))
+	}
+
 	// TODO: incr index ref count.
 
 	return resp, nil

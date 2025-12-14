@@ -5,14 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kelindar/bitmap"
+	"github.com/omalloc/tavern/internal/constants"
 
 	configv1 "github.com/omalloc/tavern/api/defined/v1/middleware"
 	"github.com/omalloc/tavern/api/defined/v1/storage"
@@ -24,7 +29,7 @@ import (
 	"github.com/omalloc/tavern/server/middleware"
 )
 
-const BitBlock = 1 << 15
+const BYPASS = "BYPASS"
 
 var fileMode = os.O_RDONLY | 0o1000000 // O_NOATIME
 
@@ -36,14 +41,20 @@ type cachingOption struct {
 	CollapsedRequestTimeout string   `json:"collapsed_request_timeout" yaml:"collapsed_request_timeout"`
 	VaryLimit               int      `json:"vary_limit" yaml:"vary_limit"`
 	VaryIgnoreKey           []string `json:"vary_ignore_key" yaml:"vary_ignore_key"`
+	Hostname                string   `json:"hostname" yaml:"hostname"`
 }
 
 func init() {
 	middleware.Register("caching", Middleware)
 }
 
+// Middleware initializes a middleware component based on the provided configuration and returns the middleware logic.
 func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
-	opts := new(cachingOption)
+	hostname, _ := os.Hostname()
+	opts := &cachingOption{
+		VaryLimit: 100,
+		Hostname:  hostname,
+	}
 	if err := c.Unmarshal(opts); err != nil {
 		return nil, middleware.EmptyCleanup, err
 	}
@@ -61,12 +72,23 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 			caching, err := processor.preCacheProcessor(proxyClient, opts, req)
 			// err to BYPASS caching
 			if err != nil {
-				caching.log.Warnf("caching find failed: %v BYPASS", err)
-				return caching.doProxy(req, false)
+				caching.log.Warnf("Precache processor failed: %v BYPASS", err)
+				resp, err = caching.doProxy(req, false) // do reverse proxy
+				if err != nil {
+					return nil, err
+				}
+
+				if resp != nil {
+					// set cache-staus header BYPASS
+					resp.Header.Set(constants.ProtocolCacheStatusKey, BYPASS)
+				}
+				return
 			}
 
 			// cache HIT
 			if caching.hit {
+				caching.cacheStatus = storage.CacheHit
+
 				rng, err1 := xhttp.SingleRange(req.Header.Get("Range"), caching.md.Size)
 				if err1 != nil {
 					// 无效 Range 处理
@@ -75,10 +97,12 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 					headers.Set("Content-Range", fmt.Sprintf("bytes */%d", caching.md.Size))
 					return nil, xhttp.NewBizError(http.StatusRequestedRangeNotSatisfiable, headers)
 				}
-				// TODO: mark x-cache status
+
+				// mark cache status with Range requests.
+				caching.markCacheStatus(rng.Start, rng.End)
 
 				// find file seek(start, end)
-				resp, err = caching.responseCache(req, rng.Start, rng.End)
+				resp, err = caching.lazilyRespond(req, rng.Start, rng.End)
 				if err != nil {
 					// fd leak
 					if resp != nil && resp.Body != nil {
@@ -103,28 +127,109 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 }
 
 type Caching struct {
-	log         *log.Helper
-	processor   *ProcessorChain
-	opt         *cachingOption
-	req         *http.Request
-	id          *object.ID
-	md          *object.Metadata
-	bucket      storage.Bucket
-	proxyClient proxy.Proxy
-
+	log          *log.Helper
+	processor    *ProcessorChain
+	opt          *cachingOption
+	req          *http.Request
+	id           *object.ID
+	md           *object.Metadata
+	bucket       storage.Bucket
+	proxyClient  proxy.Proxy
+	cacheStatus  storage.CacheStatus
 	cacheable    bool
 	hit          bool
 	refresh      bool
 	fileChanged  bool
-	noContentLen bool
+	noContentLen bool // noContentLen indicates whether the content length is omitted in the HTTP response.
+	migration    bool // cache migration
 }
 
-func (c *Caching) responseCache(req *http.Request, start, end int64) (*http.Response, error) {
+func (c *Caching) lazilyRespond(req *http.Request, start, end int64) (*http.Response, error) {
 	// find disk cache file and return Body
+	reqBlocks := iobuf.BreakInBitmap(start, end, iobuf.BitBlock)
+	startOffset := start % iobuf.BitBlock
 
-	// check
+	// match hit-blocks, miss-blocks
+	matchedBlocks := iobuf.BlockGroup(c.md.Parts, reqBlocks)
 
-	return nil, nil
+	c.md.LastRefUnix = time.Now().Unix()
+
+	c.log.Debugf("lazilyRespond %s %s start %d end %d", req.Method, c.id.Key(), start, end)
+	f, err := ropen(c.id.WPath(c.bucket.Path()))
+	if err != nil {
+		if isTooManyFiles(err) {
+			c.log.Errorf("too many open files: %v", err)
+		}
+
+		// 如果文件不存在，需要回源
+		if os.IsNotExist(err) {
+			c.log.Warnf("lazilyRespond backoff doProxy with %s", err.Error())
+			// 要解除 If-Header 校验304
+			req.Header.Del("If-None-Match")
+			req.Header.Del("If-Modified-Since")
+			req.Header.Del("If-Match")
+			req.Header.Del("If-Unmodified-Since")
+			req.Header.Del("If-Range")
+			// 发起回上游
+			return c.doProxy(req, false)
+		}
+		return nil, err
+	}
+
+	readers := make([]io.ReadCloser, 0, len(matchedBlocks))
+	for i, block := range matchedBlocks {
+		offset, limit := iobuf.BufBlock(block.BlockRange)
+		if i == 0 && startOffset > 0 {
+			offset += startOffset
+		}
+		if end < limit {
+			limit = end + 1
+		}
+
+		// [ 0-32767 = hit, 32768-65535 = miss, 65536-98303 = hit, 98304-131071 = hit]
+		// [ from file,       from upstream,     from file   ,      from file ]
+
+		// from cachefile
+		// hit block
+		if block.Match {
+			readers = append(readers, iobuf.LimitReadCloser(iobuf.SeekReadCloser(f, offset), limit-offset))
+			continue
+		}
+
+		// from upstream
+		// miss block
+		reader, err2 := c.getUpstreamReader(uint64(offset), uint64(limit-1), true)
+		if err2 != nil {
+			return nil, err2
+		}
+		readers = append(readers, reader)
+	}
+
+	resp := &http.Response{
+		// 状态码可以统一在这里固定 200，由 PostRequest 阶段或 postCacheProcessor 统一处理
+		StatusCode:    c.md.Code, // http.StatusOK,
+		ContentLength: int64(c.md.Size),
+		Header:        make(http.Header),
+		Body:          iobuf.PartsReader(f, readers...),
+	}
+
+	xhttp.CopyHeader(resp.Header, c.md.Headers)
+
+	// 206 Range 头处理
+	if req.Header.Get("Range") != "" {
+		resp.StatusCode = http.StatusPartialContent
+		resp.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, c.md.Size))
+	}
+
+	// 计算真实 ContentLength, 这里主要防止出现 0 body size 的情况
+	cl := end - start + 1
+	resp.ContentLength = cl
+	resp.Header.Set("Content-Length", strconv.FormatInt(cl, 10))
+	return resp, nil
+}
+
+func (c *Caching) getUpstreamReader(fromByte, toByte uint64, async bool) (io.ReadCloser, error) {
+	return nil, errors.New("not implement")
 }
 
 func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, error) {
@@ -231,7 +336,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 		flushBuffer, cleanup := c.flushbuffer(respRange)
 
 		// save body stream to bucket(disk).
-		resp.Body = iobuf.SavepartReader(resp.Body, BitBlock, 0, flushBuffer, c.flushFailed, cleanup)
+		resp.Body = iobuf.SavepartReader(resp.Body, iobuf.BitBlock, 0, flushBuffer, c.flushFailed, cleanup)
 	}
 
 	resp, err = c.processor.PostRequst(c, proxyReq, resp)
@@ -263,15 +368,15 @@ func (c *Caching) flushbuffer(respRange xhttp.ContentRange) (iobuf.EventSuccess,
 	// PART_SIZE -> bitmap block_size
 
 	endPart := func() uint32 {
-		epart := uint32(respRange.ObjSize / BitBlock)
-		if respRange.ObjSize%BitBlock > 0 {
+		epart := uint32(respRange.ObjSize / iobuf.BitBlock)
+		if respRange.ObjSize%iobuf.BitBlock > 0 {
 			epart++
 		}
 		return epart
 	}()
 
 	getOffset := func(partIdx uint32) int64 {
-		point := partIdx * BitBlock
+		point := partIdx * iobuf.BitBlock
 		if partIdx == 0 {
 			point = 0
 		}
@@ -307,7 +412,7 @@ func (c *Caching) flushbuffer(respRange xhttp.ContentRange) (iobuf.EventSuccess,
 		if chunked {
 			c.md.Size = current
 			c.md.Headers.Set("Content-Length", fmt.Sprintf("%d", current))
-		} else if uint64(len(buf)) != BitBlock && current != respRange.ObjSize {
+		} else if uint64(len(buf)) != iobuf.BitBlock && current != respRange.ObjSize {
 			c.log.Debugf("part[%d] is not complete, want end-part [%d] ", bitIdx+1, endPart)
 			return nil
 		}
@@ -335,7 +440,7 @@ func (c *Caching) flushbuffer(respRange xhttp.ContentRange) (iobuf.EventSuccess,
 			}
 		}
 
-		//c.log.Debugf("flushBuffer %s, curPart: %d endPart: %d, offset %d, write bufsize %d", wpath, bitIdx, endPart, offset, nn)
+		c.log.Debugf("flushBuffer %s, curPart: %d endPart: %d, offset %d, write bufsize %d", wpath, bitIdx, endPart, offset, nn)
 		return nil
 	}
 
@@ -346,6 +451,64 @@ func (c *Caching) flushbuffer(respRange xhttp.ContentRange) (iobuf.EventSuccess,
 func (c *Caching) flushFailed(err error) {
 	c.log.Errorf("flush body to disk failed: %v", err)
 	_ = c.bucket.DiscardWithMetadata(c.req.Context(), c.md)
+}
+
+func (c *Caching) markCacheStatus(start, end int64) {
+	if c.req.Method == http.MethodHead || end == math.MaxInt {
+		if c.migration {
+			c.cacheStatus = storage.CacheHotHit
+		}
+		return
+	}
+
+	first := uint32(start / iobuf.BitBlock)
+	last := uint32(end / iobuf.BitBlock)
+
+	// full hit
+	if iobuf.FullHit(first, last, c.md.Parts) {
+		c.cacheStatus = storage.CacheHit
+		if c.migration {
+			c.cacheStatus = storage.CacheHotHit
+		}
+		return
+	}
+
+	// part hit
+	if iobuf.PartHit(first, last, c.md.Parts) {
+		c.cacheStatus = storage.CachePartHit
+		return
+	}
+
+	// part miss
+	c.cacheStatus = storage.CachePartMiss
+}
+
+func (c *Caching) setXCache(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+
+	resp.Header.Set(constants.ProtocolCacheStatusKey, strings.Join([]string{c.cacheStatus.String(), "from", c.opt.Hostname, "(tavern/4.0)"}, " "))
+
+	// debug header
+	if trace := c.req.Header.Get(constants.InternalTraceKey); trace != "" {
+		resp.Header.Set(constants.InternalStoreUrl, strconv.FormatInt(int64(c.cacheStatus), 10))
+		resp.Header.Set(constants.InternalSwapfile, c.id.WPath(c.bucket.Path()))
+	}
+}
+
+// ropen ReadOnly OpenFile
+func ropen(wpath string) (*os.File, error) {
+	return os.OpenFile(wpath, fileMode, 0o755)
+}
+
+// isTooManyFiles checks if the provided error is due to too many open files.
+func isTooManyFiles(err error) bool {
+	var pathError *os.PathError
+	if errors.As(err, &pathError) {
+		return errors.Is(pathError.Err, syscall.EMFILE)
+	}
+	return errors.Is(err, syscall.EMFILE)
 }
 
 func cloneRequest(req *http.Request) *http.Request {
@@ -380,8 +543,4 @@ func newObjectIDFromRequest(req *http.Request, vd string, includeQuery bool) (*o
 	}
 
 	return object.NewVirtualID(fmt.Sprintf("%s://%s%s", req.URL.Scheme, req.Host, req.URL.Path), vd), nil
-}
-
-func ropen(wpath string) (*os.File, error) {
-	return os.OpenFile(wpath, fileMode, 0o755)
 }

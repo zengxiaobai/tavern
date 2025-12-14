@@ -7,14 +7,19 @@ import (
 	"io"
 )
 
+// _ is a compile-time check to ensure that savepartReader implements the io.ReadCloser interface.
 var _ io.ReadCloser = (*savepartReader)(nil)
 
+// EventSuccess defines a callback for successful events with data buffer, bit index, position, and EOF flag as parameters.
+// EventError defines a callback to handle errors passed as an argument.
+// EventClose defines a callback invoked when the process is closed, providing an EOF flag.
 type (
 	EventSuccess func(buf []byte, bitIdx uint32, pos uint64, eof bool) error
 	EventError   func(err error)
 	EventClose   func(eof bool)
 )
 
+// savepartReader is a wrapper around io.ReadCloser that processes data in fixed-size blocks and emits events during reading.
 type savepartReader struct {
 	R io.ReadCloser
 
@@ -30,7 +35,7 @@ type savepartReader struct {
 	onClose   EventClose
 }
 
-// Read implements io.ReadCloser.
+// Read reads data into p from the underlying io.ReadCloser and processes it with internal buffers and events.
 func (s *savepartReader) Read(p []byte) (n int, err error) {
 	n, err = s.R.Read(p)
 	if err != nil {
@@ -54,7 +59,7 @@ func (s *savepartReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-// Close implements io.ReadCloser.
+// Close closes the underlying reader and triggers the onClose event if defined. Returns any error from the reader's Close method.
 func (s *savepartReader) Close() error {
 	if s.onClose != nil {
 		s.onClose(s.eof)
@@ -62,6 +67,7 @@ func (s *savepartReader) Close() error {
 	return s.R.Close()
 }
 
+// flush processes provided data, manages buffer writes, handles skip logic, and writes remaining data on EOF.
 func (s *savepartReader) flush(data []byte, realLen int, eof bool) error {
 	datalen := uint64(realLen)
 	datapos := uint64(0)
@@ -118,6 +124,9 @@ func (s *savepartReader) flush(data []byte, realLen int, eof bool) error {
 	return nil
 }
 
+// writeBlock writes the current buffer's contents to the destination and triggers the success event.
+// It resets the buffer after writing. If the buffer is empty, no action is taken.
+// The eof parameter indicates if the end of the input stream has been reached.
 func (s *savepartReader) writeBlock(eof bool) error {
 	s.eof = eof
 
@@ -138,6 +147,14 @@ func (s *savepartReader) writeBlock(eof bool) error {
 	return nil
 }
 
+// SavepartReader wraps an io.ReadCloser and allows controlled, buffered reading with custom event handling for specific cases.
+// Parameters:
+// - r: Source io.ReadCloser to read data from.
+// - blockSize: Size of each data block to buffer before triggering an event.
+// - startAt: Initial offset in bytes to start reading from.
+// - flushBuffer: Callback triggered when a block is successfully written.
+// - flushFailed: Callback triggered if an error occurs during block processing.
+// - cleanup: Callback executed when the reader is closed.
 func SavepartReader(r io.ReadCloser, blockSize int, startAt int,
 	flushBuffer EventSuccess, flushFailed EventError, cleanup EventClose) io.ReadCloser {
 	skip := false

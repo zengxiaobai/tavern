@@ -240,25 +240,25 @@ func (s *HTTPServer) buildHandler(tripper http.RoundTripper) http.HandlerFunc {
 			want := resp.Header.Get("Content-Length")
 
 			sent, err := io.CopyBuffer(w, resp.Body, *buf)
-			if err != nil {
+			if err != nil && !errors.Is(err, io.EOF) {
 				// abort ? continue ?
-				clog.Errorf("failed to copy upstream response body to client: [%s] %s %s sent=%d want=%s err=%s", req.Proto, req.Method, req.URL.Path, sent, want, err)
+				clog.Errorf("failed to copy response body to client: [%s] %s %s sent=%d want=%s err=%s", req.Proto, req.Method, req.URL.Path, sent, want, err)
 				_metricRequestUnexpectedClosed.WithLabelValues(req.Proto, req.Method).Inc()
 				return
 			}
 
 			if slices.Contains(resp.TransferEncoding, "chunked") || want == "" {
-				clog.Debugf("copied %d bytes chunked body from upstream to client", sent)
+				clog.Debugf("copied %d response body bytes chunked body from upstream to client", sent)
 				return
 			}
 
 			want1, _ := strconv.ParseInt(want, 10, 64)
 			if sent != want1 {
-				clog.Warnf("copied %d bytes from upstream to client, conflict Content-Length %s bytes", sent, want)
+				clog.Warnf("copied %d response body bytes to client, conflict Content-Length %s bytes", sent, want)
 				return
 			}
 
-			clog.Debugf("copied %d bytes from upstream to client, Content-Length %s bytes", sent, want)
+			clog.Debugf("copied %d response body bytes to client, Content-Length %s bytes", sent, want)
 		}
 
 		doCopyBody()
