@@ -10,10 +10,19 @@ import (
 type Bootstrap struct {
 	Strict   bool      `json:"strict" yaml:"strict"`
 	PidFile  string    `json:"pidfile" yaml:"pidfile"`
+	Logger   *Logger   `json:"logger" yaml:"logger"`
 	Server   *Server   `json:"server" yaml:"server"`
 	Plugin   []*Plugin `json:"plugin" yaml:"plugin"`
 	Upstream *Upstream `json:"upstream" yaml:"upstream"`
 	Storage  *Storage  `json:"storage" yaml:"storage"`
+}
+
+type Logger struct {
+	Level   string `json:"level" yaml:"level"`
+	Path    string `json:"path" yaml:"path"`
+	Caller  bool   `json:"caller" yaml:"caller"`
+	TraceID bool   `json:"taceid" yaml:"taceid"`
+	NoPid   bool   `json:"nopid" yaml:"nopid"`
 }
 
 type Server struct {

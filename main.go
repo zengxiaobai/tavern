@@ -2,8 +2,10 @@ package main
 
 import (
 	"flag"
+	stdlog "log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/omalloc/proxy/selector/once"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	pluginv1 "github.com/omalloc/tavern/api/defined/v1/plugin"
 	"github.com/omalloc/tavern/conf"
@@ -72,7 +75,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	app, err := newApp(bc)
+	logger := newLogger(bc.Logger)
+	log.SetLogger(logger)
+
+	app, err := newApp(bc, logger)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -82,7 +88,7 @@ func main() {
 	}
 }
 
-func newApp(bc *conf.Bootstrap) (*kratos.App, error) {
+func newApp(bc *conf.Bootstrap, logger log.Logger) (*kratos.App, error) {
 	stopTimeout := 120 * time.Second
 
 	// graceful upgrade
@@ -143,9 +149,44 @@ func newApp(bc *conf.Bootstrap) (*kratos.App, error) {
 		kratos.Name("tavern"),
 		kratos.Version(Version),
 		kratos.StopTimeout(stopTimeout),
-		kratos.Logger(log.GetLogger()),
+		kratos.Logger(logger),
 		kratos.Server(servers...),
 	), nil
+}
+
+func newLogger(cl *conf.Logger) log.Logger {
+	w := log.NewStdLogger(stdlog.Writer())
+
+	if cl.Path != "" {
+		_ = os.MkdirAll(filepath.Dir(cl.Path), 0o755)
+		f := &lumberjack.Logger{
+			Filename:   cl.Path,
+			MaxSize:    1,
+			MaxBackups: 3,
+			MaxAge:     1,
+			Compress:   false,
+		}
+		w = log.NewStdLogger(f)
+	}
+	// append option
+	opts := make([]interface{}, 0, 8)
+	opts = append(opts, "ts", log.Timestamp(time.RFC3339))
+	if !cl.NoPid {
+		opts = append(opts, "pid", os.Getpid())
+	}
+	if cl.Caller {
+		opts = append(opts, "caller", log.Caller(5))
+	}
+	if cl.TraceID {
+		//opts = append(opts, "request.id", metrics.RequestID())
+	}
+
+	logger := log.NewFilter(
+		log.With(w, opts...),
+		log.FilterLevel(log.ParseLevel(cl.Level)),
+	)
+	log.SetLogger(logger)
+	return logger
 }
 
 func loadPlugin(logger log.Logger, bc *conf.Bootstrap) []pluginv1.Plugin {
