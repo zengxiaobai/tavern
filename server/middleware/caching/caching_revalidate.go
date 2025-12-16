@@ -7,6 +7,7 @@ import (
 
 	storagev1 "github.com/omalloc/tavern/api/defined/v1/storage"
 	"github.com/omalloc/tavern/api/defined/v1/storage/object"
+	xhttp "github.com/omalloc/tavern/pkg/x/http"
 )
 
 var _ Processor = (*RevalidateProcessor)(nil)
@@ -94,11 +95,50 @@ func (r *RevalidateProcessor) revalidate(c *Caching, resp *http.Response, req *h
 		return resp, nil
 	}
 
-	// update Last-Modified
+	// freshness metadata
+	_ = r.freshness(c, resp)
 
-	// TODO: lazilyRespond
+	// lazilyRespond
+	if rawRange := req.Context().Value(rawRangeKey{}).(string); rawRange != "" {
+		rng, err := xhttp.SingleRange(rawRange, c.md.Size)
+		if err != nil {
+			return nil, xhttp.NewBizError(http.StatusRequestedRangeNotSatisfiable, nil)
+		}
+		c.log.Debugf("freshness cache by Range bytes=%d-%d", rng.Start, rng.End)
+		return c.lazilyRespond(req, rng.Start, rng.End)
+	}
 
-	return resp, nil
+	end := int64(0)
+	if c.md.Size > 0 {
+		end = int64(c.md.Size - 1)
+	}
+
+	c.log.Debugf("freshness cache by Range bytes=%d-%d", 0, end)
+	return c.lazilyRespond(req, 0, end)
+}
+
+func (r *RevalidateProcessor) freshness(c *Caching, resp *http.Response) bool {
+	expiredAt, cacheable := xhttp.ParseCacheTime("", resp.Header)
+	if !cacheable {
+		return false
+	}
+
+	now := time.Now()
+	metadata := c.md
+	metadata.ExpiresAt = now.Add(expiredAt).Unix()
+	metadata.RespUnix = now.Unix()
+	metadata.LastRefUnix = now.Unix()
+
+	cloneHeaders := []string{"Last-Modified", "ETag", "Cache-Control"}
+	for _, name := range cloneHeaders {
+		value := resp.Header.Get(name)
+		if value != "" {
+			metadata.Headers.Set(name, value)
+		}
+	}
+	c.cacheable = true
+	c.md = metadata
+	return true
 }
 
 func NewRevalidateProcessor(opts ...RefreshOption) Processor {

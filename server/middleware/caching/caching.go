@@ -66,8 +66,10 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 		NewStateProcessor(),
 		// Cache Prefetch
 		NewPrefetchProcessor(),
-		// ETag/Last-Modified Validation
+		// ETag/Last-Modified If-Match Validation
 		NewRevalidateProcessor(),
+		// ETag/Last-Modified/ContentLength Changed
+		NewFileChangedProcessor(),
 	).fill()
 
 	return func(origin http.RoundTripper) http.RoundTripper {
