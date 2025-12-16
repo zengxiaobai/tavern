@@ -325,6 +325,7 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 		c.md = &object.Metadata{
 			ID:          c.id,
 			Headers:     make(http.Header),
+			BlockSize:   iobuf.BitBlock,
 			Parts:       bitmap.Bitmap{},
 			Size:        respRange.ObjSize,
 			Code:        http.StatusOK,
