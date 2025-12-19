@@ -76,6 +76,7 @@ func (m *Metadata) Clone() *Metadata {
 	return &Metadata{
 		ID:          m.ID,
 		Parts:       m.Parts.Clone(nil),
+		BlockSize:   m.BlockSize,
 		Code:        m.Code,
 		Size:        m.Size,
 		RespUnix:    m.RespUnix,
