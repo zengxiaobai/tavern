@@ -5,9 +5,9 @@ import (
 	"github.com/omalloc/tavern/storage/selector/hashring"
 )
 
-var registrySelector = map[string]storage.Selector{
-	"hashring": nil,
-}
+//var registrySelector = map[string]storage.Selector{
+//	"hashring": nil,
+//}
 
 func New(buckets []storage.Bucket, typ string) storage.Selector {
 	curr, err := hashring.New(buckets, hashring.WithReplicas(20))

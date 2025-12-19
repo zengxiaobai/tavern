@@ -79,9 +79,8 @@ type call struct {
 // Group represents a class of work and forms a namespace in
 // which units of work can be executed with duplicate suppression.
 type Group struct {
-	mu   sync.Mutex       // protects m
-	m    map[string]*call // lazily initialized
-	wait time.Duration
+	mu sync.Mutex       // protects m
+	m  map[string]*call // lazily initialized
 }
 
 // Result holds the results of Do, so they can be passed
