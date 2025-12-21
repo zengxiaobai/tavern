@@ -15,12 +15,12 @@ import (
 	"time"
 
 	"github.com/kelindar/bitmap"
-	"github.com/omalloc/tavern/internal/constants"
 
 	configv1 "github.com/omalloc/tavern/api/defined/v1/middleware"
 	"github.com/omalloc/tavern/api/defined/v1/storage"
 	"github.com/omalloc/tavern/api/defined/v1/storage/object"
 	"github.com/omalloc/tavern/contrib/log"
+	"github.com/omalloc/tavern/internal/constants"
 	"github.com/omalloc/tavern/pkg/iobuf"
 	xhttp "github.com/omalloc/tavern/pkg/x/http"
 	"github.com/omalloc/tavern/proxy"
@@ -86,6 +86,13 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 		return middleware.RoundTripperFunc(func(req *http.Request) (resp *http.Response, err error) {
 			// find indexdb cache-key has hit/miss.
 			caching, err := processor.preCacheProcessor(proxyClient, opts, req)
+
+			defer func() {
+				caching.reset()
+
+				cachingPool.Put(caching)
+			}()
+
 			// err to BYPASS caching
 			if err != nil {
 				caching.log.Warnf("Precache processor failed: %v BYPASS", err)

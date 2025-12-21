@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/omalloc/tavern/api/defined/v1/storage"
@@ -19,6 +20,12 @@ import (
 	xhttp "github.com/omalloc/tavern/pkg/x/http"
 	"github.com/omalloc/tavern/proxy"
 )
+
+var cachingPool = sync.Pool{
+	New: func() any {
+		return &Caching{}
+	},
+}
 
 type Caching struct {
 	log          *log.Helper
@@ -81,6 +88,16 @@ func (c *Caching) setXCache(resp *http.Response) {
 		resp.Header.Set(constants.InternalStoreUrl, strconv.FormatInt(int64(c.cacheStatus), 10))
 		resp.Header.Set(constants.InternalSwapfile, c.id.WPath(c.bucket.Path()))
 	}
+}
+
+func (c *Caching) reset() {
+	c.cacheable = false
+	c.hit = false
+	c.prefetch = false
+	c.revalidate = false
+	c.fileChanged = false
+	c.noContentLen = false
+	c.migration = false
 }
 
 // ropen ReadOnly OpenFile

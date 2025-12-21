@@ -94,17 +94,28 @@ func (pc *ProcessorChain) preCacheProcessor(proxyClient proxy.Proxy, opt *cachin
 	// lookup cache with cache-key
 	md, _ := bucket.Lookup(req.Context(), objectID)
 
-	caching := &Caching{
-		log:         log.Context(req.Context()),
-		proxyClient: proxyClient,
-		opt:         opt,
-		id:          objectID,
-		bucket:      bucket,
-		req:         req,
-		md:          md,
-		processor:   pc,
-		cacheStatus: storagev1.CacheMiss,
-	}
+	caching := cachingPool.Get().(*Caching)
+	caching.log = log.Context(req.Context())
+	caching.proxyClient = proxyClient
+	caching.opt = opt
+	caching.id = objectID
+	caching.bucket = bucket
+	caching.req = req
+	caching.md = md
+	caching.processor = pc
+	caching.cacheStatus = storagev1.CacheMiss
+
+	// caching := &Caching{
+	// 	log:         log.Context(req.Context()),
+	// 	proxyClient: proxyClient,
+	// 	opt:         opt,
+	// 	id:          objectID,
+	// 	bucket:      bucket,
+	// 	req:         req,
+	// 	md:          md,
+	// 	processor:   pc,
+	// 	cacheStatus: storagev1.CacheMiss,
+	// }
 
 	hit, err := pc.Lookup(caching, req)
 	if err != nil {

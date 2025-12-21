@@ -61,7 +61,7 @@ func init() {
 	// init prometheus
 	prometheus.Unregister(collectors.NewGoCollector())
 	registerer := prometheus.WrapRegistererWithPrefix("tr_tavern_", prometheus.DefaultRegisterer)
-	registerer.MustRegister(collectors.NewGoCollector(collectors.WithGoCollectorMemStatsMetricsDisabled()))
+	registerer.MustRegister(collectors.NewGoCollector())
 }
 
 func main() {

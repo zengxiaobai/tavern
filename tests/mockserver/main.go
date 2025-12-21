@@ -26,6 +26,9 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.Handle("/path/to/", http.StripPrefix("/path/to", http.FileServer(http.Dir("./files"))))
+	mux.Handle("/path/", http.StripPrefix("/path/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./files/1B.bin")
+	})))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("received request: %s %s", r.Method, r.URL.String())
