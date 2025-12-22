@@ -44,6 +44,8 @@ type cachingOption struct {
 	FuzzyRefreshRate            float64  `json:"fuzzy_refresh_rate" yaml:"fuzzy_refresh_rate"`
 	CollapsedRequest            bool     `json:"collapsed_request" yaml:"collapsed_request"`
 	CollapsedRequestWaitTimeout Duration `json:"collapsed_request_wait_timeout" yaml:"collapsed_request_wait_timeout"`
+	ObjectPoolEnabled           bool     `json:"object_pool_enabled" yaml:"object_pool_enabled"`
+	ObjectPollSize              int      `json:"object_poll_size" yaml:"object_poll_size"`
 	VaryLimit                   int      `json:"vary_limit" yaml:"vary_limit"`
 	VaryIgnoreKey               []string `json:"vary_ignore_key" yaml:"vary_ignore_key"`
 	Hostname                    string   `json:"hostname" yaml:"hostname"`
@@ -61,8 +63,10 @@ func init() {
 func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 	hostname, _ := os.Hostname()
 	opts := &cachingOption{
-		VaryLimit: 100,
-		Hostname:  hostname,
+		VaryLimit:         100,
+		Hostname:          hostname,
+		ObjectPoolEnabled: false,
+		ObjectPollSize:    20000,
 	}
 	if err := c.Unmarshal(opts); err != nil {
 		return nil, middleware.EmptyCleanup, err
@@ -87,11 +91,12 @@ func Middleware(c *configv1.Middleware) (middleware.Middleware, func(), error) {
 			// find indexdb cache-key has hit/miss.
 			caching, err := processor.preCacheProcessor(proxyClient, opts, req)
 
-			defer func() {
-				caching.reset()
-
-				cachingPool.Put(caching)
-			}()
+			// TODO: object pool
+			// 	reuse (wrapper Body.Close() call object reset and put Pool.)
+			//defer func() {
+			//	caching.reset()
+			//	cachingPool.Put(caching)
+			//}()
 
 			// err to BYPASS caching
 			if err != nil {

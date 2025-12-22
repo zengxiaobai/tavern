@@ -14,82 +14,82 @@ type emptyBucket struct{}
 
 // Allow implements storage.Bucket.
 func (e *emptyBucket) Allow() int {
-	panic("unimplemented")
+	return 100
 }
 
 // Close implements storage.Bucket.
 func (e *emptyBucket) Close() error {
-	panic("unimplemented")
+	return nil
 }
 
 // Discard implements storage.Bucket.
 func (e *emptyBucket) Discard(ctx context.Context, id *object.ID) error {
-	panic("unimplemented")
+	return nil
 }
 
 // DiscardWithHash implements storage.Bucket.
 func (e *emptyBucket) DiscardWithHash(ctx context.Context, hash object.IDHash) error {
-	panic("unimplemented")
+	return nil
 }
 
 // DiscardWithMessage implements storage.Bucket.
 func (e *emptyBucket) DiscardWithMessage(ctx context.Context, id *object.ID, msg string) error {
-	panic("unimplemented")
+	return nil
 }
 
 // DiscardWithMetadata implements storage.Bucket.
 func (e *emptyBucket) DiscardWithMetadata(ctx context.Context, meta *object.Metadata) error {
-	panic("unimplemented")
+	return nil
 }
 
 // Exist implements storage.Bucket.
 func (e *emptyBucket) Exist(ctx context.Context, id []byte) bool {
-	panic("unimplemented")
+	return false
 }
 
 // Expired implements storage.Bucket.
 func (e *emptyBucket) Expired(ctx context.Context, id *object.ID, md *object.Metadata) bool {
-	panic("unimplemented")
+	return true
 }
 
 // HasBad implements storage.Bucket.
 func (e *emptyBucket) HasBad() bool {
-	panic("unimplemented")
+	return false
 }
 
 // ID implements storage.Bucket.
 func (e *emptyBucket) ID() string {
-	panic("unimplemented")
+	return "empty:/dev/null"
 }
 
 // Iterate implements storage.Bucket.
 func (e *emptyBucket) Iterate(ctx context.Context, fn func(*object.Metadata) error) error {
-	panic("unimplemented")
+	return nil
 }
 
 // Lookup implements storage.Bucket.
 func (e *emptyBucket) Lookup(ctx context.Context, id *object.ID) (*object.Metadata, error) {
-	panic("unimplemented")
+	return nil, storage.ErrKeyNotFound
 }
 
 // Remove implements storage.Bucket.
 func (e *emptyBucket) Remove(ctx context.Context, id *object.ID) error {
-	panic("unimplemented")
+	return nil
 }
 
 // Store implements storage.Bucket.
 func (e *emptyBucket) Store(ctx context.Context, meta *object.Metadata) error {
-	panic("unimplemented")
+	return nil
 }
 
 // UseAllow implements storage.Bucket.
 func (e *emptyBucket) UseAllow() bool {
-	panic("unimplemented")
+	return true
 }
 
 // Weight implements storage.Bucket.
 func (e *emptyBucket) Weight() int {
-	panic("unimplemented")
+	return 1000
 }
 
 // StoreType implements storage.Bucket.

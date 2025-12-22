@@ -17,6 +17,7 @@ import (
 )
 
 const Method = "PURGE"
+const PurgeKeyPrefix = "purge/"
 
 var _ configv1.Plugin = (*PurgePlugin)(nil)
 

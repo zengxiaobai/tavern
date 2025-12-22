@@ -22,6 +22,13 @@ func HandlePProf(c *conf.ServerPProf, r *http.ServeMux) {
 	r.HandleFunc("/debug/pprof/trace", basicAuth(pprof.Trace))
 }
 
+// basicAuth is a middleware function that enforces HTTP Basic Authentication for a given handler function.
+//
+// e.g.
+//
+//		echo -n "root:password" | base64
+//	 	> cm9vdDpwYXNzd29yZA==
+//		curl http://api/debug/pprof/profile -H'Authorization: Basic cm9vdDpwYXNzd29yZA=='
 func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()

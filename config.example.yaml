@@ -42,6 +42,8 @@ server:
         collapsed_request: true
         collapsed_request_wait_timeout: 100ms
         include_query_in_cache_key: true
+        object_pool_enabled: true
+        object_pool_size: 20000
         vary_limit: 100
         vary_ignore_key:
           - "Cookie"
