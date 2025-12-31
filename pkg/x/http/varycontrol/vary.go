@@ -35,7 +35,7 @@ func (k *Key) VaryData(h http.Header) string {
 
 	kv := make(map[string]string, l)
 	for _, key := range *k {
-		v := sortValues(h.Values(key))
+		v := normalizeHeaderValue(key, h.Values(key))
 		kv[key] = v
 	}
 
@@ -136,4 +136,104 @@ func splitTrimSpace(s string) []string {
 	}
 
 	return v
+}
+
+func normalizeHeaderValue(key string, values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	keyLower := strings.ToLower(strings.TrimSpace(key))
+
+	if keyLower == "accept-encoding" {
+		return normalizeAcceptEncoding(values)
+	}
+
+	return sortValues(values)
+}
+
+func normalizeAcceptEncoding(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	encodings := make([]string, 0)
+	for _, val := range values {
+		parts := strings.Split(val, ",")
+		for _, part := range parts {
+			encoding := strings.TrimSpace(part)
+			if encoding != "" {
+				encodings = append(encodings, encoding)
+			}
+		}
+	}
+
+	if len(encodings) == 0 {
+		return ""
+	}
+
+	sort.Strings(encodings)
+
+	return strings.Join(encodings, ",")
+}
+
+func BuildVaryKeyForCache(varyHeaders []string, reqHeaders http.Header, respHeaders http.Header) string {
+	if len(varyHeaders) == 0 {
+		return ""
+	}
+
+	kv := make(map[string]string)
+	for _, varyKey := range varyHeaders {
+		key := strings.ToLower(strings.TrimSpace(varyKey))
+		if key == "" {
+			continue
+		}
+
+		if key == "accept-encoding" {
+			contentEncoding := GetResponseContentEncodingFromHeaders(respHeaders)
+			if contentEncoding != "" {
+				kv[key] = NormalizeContentEncoding(contentEncoding)
+			}
+		} else {
+			values := reqHeaders.Values(key)
+			if len(values) > 0 {
+				kv[key] = normalizeHeaderValue(key, values)
+			}
+		}
+	}
+
+	if len(kv) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var buf strings.Builder
+	for i, key := range keys {
+		if i > 0 {
+			buf.WriteByte('&')
+		}
+		buf.WriteString(key)
+		buf.WriteByte('=')
+		buf.WriteString(kv[key])
+	}
+
+	return buf.String()
+}
+
+func GetResponseContentEncodingFromHeaders(headers http.Header) string {
+	encoding := headers.Get("Content-Encoding")
+	if encoding == "" {
+		return ""
+	}
+
+	encodings := strings.Split(encoding, ",")
+	if len(encodings) > 0 {
+		return strings.TrimSpace(encodings[0])
+	}
+	return ""
 }

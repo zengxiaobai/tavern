@@ -23,6 +23,7 @@ import (
 	"github.com/omalloc/tavern/internal/constants"
 	"github.com/omalloc/tavern/pkg/iobuf"
 	xhttp "github.com/omalloc/tavern/pkg/x/http"
+	"github.com/omalloc/tavern/pkg/x/http/varycontrol"
 	"github.com/omalloc/tavern/proxy"
 	"github.com/omalloc/tavern/server/middleware"
 )
@@ -408,6 +409,11 @@ func (c *Caching) doProxy(req *http.Request, subRequest bool) (*http.Response, e
 		xhttp.CopyHeader(c.md.Headers, resp.Header)
 	}
 
+	// handle vary cache key generation before storing
+	if !notModified && statusOK {
+		c.handleVaryCacheKey(proxyReq, resp)
+	}
+
 	c.log.Debugf("doProxy end %s %q code: %d %s", proxyReq.Method, proxyReq.URL.String(), resp.StatusCode, respRange.String())
 	return resp, proxyErr
 }
@@ -505,4 +511,152 @@ func (c *Caching) flushbuffer(respRange xhttp.ContentRange) (iobuf.EventSuccess,
 func (c *Caching) flushFailed(err error) {
 	c.log.Errorf("flush body to disk failed: %v", err)
 	_ = c.bucket.DiscardWithMetadata(c.req.Context(), c.md)
+}
+
+// handleVaryCacheKey 处理Vary缓存key的生成和缓存结构的更新
+//
+// 根据响应头中的Vary信息，决定如何更新缓存结构:
+//   - 如果响应没有Vary头，将VaryIndex降级为普通缓存
+//   - 如果响应有Vary头，根据当前缓存类型进行相应处理:
+//   - FlagCache: 升级为VaryIndex + 创建VaryCache
+//   - FlagVaryIndex: 更新VaryIndex的VirtualKey列表
+//   - FlagVaryCache: 更新VaryIndex的VirtualKey列表（通过rootmd）
+//
+// 注意: VaryCache的创建在doProxy中自动完成，这里只负责更新VaryIndex
+func (c *Caching) handleVaryCacheKey(req *http.Request, resp *http.Response) {
+	varyHeaders := varycontrol.Clean(resp.Header.Values("Vary")...)
+
+	// 响应没有Vary头，如果当前是VaryIndex则降级为普通缓存
+	if len(varyHeaders) == 0 {
+		if c.md.Flags == object.FlagVaryIndex {
+			c.md.Flags = object.FlagCache
+			c.md.VirtualKey = nil
+			_ = c.bucket.Store(req.Context(), c.md)
+		}
+		return
+	}
+
+	varyKey := varycontrol.BuildVaryKeyForCache(varyHeaders, req.Header, resp.Header)
+	if varyKey == "" {
+		return
+	}
+
+	// 响应有Vary头，根据当前缓存类型进行处理
+	switch c.md.Flags {
+	case object.FlagCache:
+		// 普通缓存升级为VaryIndex
+		c.upgradeToVaryIndex(req, resp, varyHeaders, varyKey)
+
+	case object.FlagVaryIndex:
+		// 更新VaryIndex的VirtualKey列表
+		c.updateVaryIndex(req, resp, varyHeaders, varyKey)
+
+	case object.FlagVaryCache:
+		// 更新VaryCache（通过rootmd更新VaryIndex）
+		c.updateVaryCache(req, resp, varyHeaders, varyKey)
+	}
+}
+
+// upgradeToVaryIndex 将普通缓存升级为VaryIndex
+//
+// 场景: 首次请求，响应有Vary头，当前缓存为普通缓存
+//
+// 处理流程:
+//  1. 将当前metadata升级为VaryIndex（Flags=1）
+//  2. 设置VirtualKey为构建的key
+//  3. 存储VaryIndex
+//
+// 示例:
+//   - 请求: GET /api/data + Accept-Encoding: gzip,br
+//   - 响应: Content-Encoding: br + Vary: Accept-Encoding
+//   - VirtualKey: "accept-encoding=br"
+//   - VaryIndex: Flags=1, VirtualKey=["accept-encoding=br"]
+//   - VaryCache: Flags=2, Content-Encoding=br（在doProxy中自动创建）
+func (c *Caching) upgradeToVaryIndex(req *http.Request, resp *http.Response, varyHeaders varycontrol.Key, varyKey string) {
+	// 将当前metadata升级为VaryIndex（Flags=1）
+	c.md.Flags = object.FlagVaryIndex
+	// 设置VirtualKey为构建的key
+	c.md.VirtualKey = []string{varyKey}
+
+	// 存储VaryIndex
+	_ = c.bucket.Store(req.Context(), c.md)
+}
+
+// updateVaryIndex 更新VaryIndex的VirtualKey列表
+//
+// 场景: 后续请求，响应有Vary头，发现新的vary组合
+//
+// 处理流程:
+//  1. 根据Vary头和请求/响应头构建VirtualKey
+//  2. 检查VirtualKey是否已存在于VaryIndex的VirtualKey列表中
+//  3. 如果不存在，添加到列表中
+//  4. 如果超过maxLimit，删除最旧的VirtualKey
+//  5. 更新VaryIndex
+//
+// 示例:
+//   - 当前VaryIndex: VirtualKey=["accept-encoding=br"]
+//   - 新请求: Accept-Encoding: gzip
+//   - 新响应: Content-Encoding: gzip + Vary: Accept-Encoding
+//   - 新VirtualKey: "accept-encoding=gzip"
+//   - 更新后: VirtualKey=["accept-encoding=br", "accept-encoding=gzip"]
+func (c *Caching) updateVaryIndex(req *http.Request, resp *http.Response, varyHeaders varycontrol.Key, varyKey string) {
+	// 根据Vary头和请求/响应头构建VirtualKey
+	if c.containsVirtualKey(c.md.VirtualKey, varyKey) {
+		return // 已存在，不重复添加
+	}
+
+	// 添加新的VirtualKey
+	virtualKeys := append(c.md.VirtualKey, varyKey)
+	// 限制VirtualKey数量（默认100）
+	if len(virtualKeys) > 100 {
+		virtualKeys = virtualKeys[len(virtualKeys)-100:]
+	}
+
+	// 更新VaryIndex的VirtualKey列表
+	c.md.VirtualKey = virtualKeys
+	_ = c.bucket.Store(req.Context(), c.md)
+}
+
+// updateVaryCache 更新VaryCache（通过rootmd更新VaryIndex）
+//
+// 场景: 当前是VaryCache，响应有Vary头，发现新的vary组合
+//
+// 处理流程:
+//  1. 根据Vary头和请求/响应头构建VirtualKey
+//  2. 通过rootmd访问VaryIndex
+//  3. 检查VirtualKey是否已存在于VaryIndex的VirtualKey列表中
+//  4. 如果不存在，添加到列表中
+//  5. 如果超过maxLimit，删除最旧的VirtualKey
+//  6. 更新VaryIndex（通过rootmd）
+//
+// 注意: rootmd是VaryIndex的引用，通过它来更新VaryIndex的VirtualKey列表
+func (c *Caching) updateVaryCache(req *http.Request, resp *http.Response, varyHeaders varycontrol.Key, varyKey string) {
+	if c.rootmd == nil {
+		return
+	}
+
+	// 根据Vary头和请求/响应头构建VirtualKey
+	if c.containsVirtualKey(c.rootmd.VirtualKey, varyKey) {
+		return // 已存在，不重复添加
+	}
+
+	// 添加新的VirtualKey
+	virtualKeys := append(c.rootmd.VirtualKey, varyKey)
+	// 限制VirtualKey数量（默认100）
+	if len(virtualKeys) > 100 {
+		virtualKeys = virtualKeys[len(virtualKeys)-100:]
+	}
+
+	// 更新VaryIndex的VirtualKey列表（通过rootmd）
+	c.rootmd.VirtualKey = virtualKeys
+	_ = c.bucket.Store(req.Context(), c.rootmd)
+}
+
+func (c *Caching) containsVirtualKey(keys []string, key string) bool {
+	for _, k := range keys {
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
