@@ -170,26 +170,7 @@ func (d *diskBucket) DiscardWithHash(ctx context.Context, hash object.IDHash) er
 		return err
 	}
 
-	// 缓存不存在
-	if md == nil {
-		return os.ErrNotExist
-	}
-
-	// part 是否存在
-	if md.Parts.Count() <= 0 {
-		return d.indexdb.Delete(ctx, id)
-	}
-
-	// how get caching locker
-
-	// 存在
-	if err = os.Remove(wpath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Context(ctx).Errorf("failed to remove file %s: %v", wpath, err)
-	}
-
-	// 删除 part
-	md.Parts.Clear()
-	return d.indexdb.Delete(ctx, id)
+	return d.discard(ctx, md)
 }
 
 // DiscardWithMessage implements storage.Bucket.
