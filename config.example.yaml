@@ -95,7 +95,13 @@ storage:
     - path: /cache1
       type: normal
       max_object_limit: 10000000
-      dbmap_config:
+      db_config:
+        cache_size: 1024000000
+        mem_table_size: 256000000
+        bytes_per_sync: 10240000
+        wal_bytes_per_sync: 20480000
+        wal_min_sync_interval: 5
+        write_sync_mode: false
     - path: /cache2
       type: normal
 upstream:

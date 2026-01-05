@@ -8,12 +8,13 @@
 *.so
 *.dylib
 bin/*
+__debug_bin*
 
 # Test binary, built with `go test -c`
 *.test
 logs/
 tests/**/*.bin
-tests/**/mockserver
+tests/mockserver/mockserver
 
 # Code coverage profiles and other test artifacts
 *.out

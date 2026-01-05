@@ -36,10 +36,12 @@ func NewBucket(opt *conf.Bucket, sharedkv storage.SharedKV) (storage.Bucket, err
 func mergeConfig(global *globalBucketOption, bucket *conf.Bucket) *conf.Bucket {
 	// copied from conf bucket.
 	copied := &conf.Bucket{
-		Path:   bucket.Path,
-		Driver: bucket.Driver,
-		Type:   bucket.Type,
-		DBType: bucket.DBType,
+		Path:           bucket.Path,
+		Driver:         bucket.Driver,
+		Type:           bucket.Type,
+		DBType:         bucket.DBType,
+		MaxObjectLimit: bucket.MaxObjectLimit,
+		DBConfig:       bucket.DBConfig, // custom db config
 	}
 
 	if copied.Driver == "" {

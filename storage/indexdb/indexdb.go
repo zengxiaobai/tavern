@@ -69,5 +69,8 @@ func (o *option) Codec() encoding.Codec {
 
 // Unmarshal implements Option.
 func (o *option) Unmarshal(v interface{}) error {
-	return mapstruct.Decode(o, v)
+	if len(o.mapConfig) <= 0 {
+		return nil
+	}
+	return mapstruct.Decode(o.mapConfig, v)
 }
