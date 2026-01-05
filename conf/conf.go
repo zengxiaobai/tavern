@@ -19,11 +19,15 @@ type Bootstrap struct {
 }
 
 type Logger struct {
-	Level   string `json:"level" yaml:"level"`
-	Path    string `json:"path" yaml:"path"`
-	Caller  bool   `json:"caller" yaml:"caller"`
-	TraceID bool   `json:"traceid" yaml:"traceid"`
-	NoPid   bool   `json:"nopid" yaml:"nopid"`
+	Level      string `json:"level" yaml:"level"`
+	Path       string `json:"path" yaml:"path"`
+	Caller     bool   `json:"caller" yaml:"caller"`
+	TraceID    bool   `json:"traceid" yaml:"traceid"`
+	MaxSize    int    `json:"max_size" yaml:"max_size"`
+	MaxAge     int    `json:"max_age" yaml:"max_age"`
+	MaxBackups int    `json:"max_backups" yaml:"max_backups"`
+	Compress   bool   `json:"compress" yaml:"compress"`
+	NoPid      bool   `json:"nopid" yaml:"nopid"`
 }
 
 type Server struct {
@@ -75,12 +79,14 @@ type Storage struct {
 }
 
 type Bucket struct {
-	Path      string `json:"path" yaml:"path"`             // local path or ?
-	Driver    string `json:"driver" yaml:"driver"`         // native, custom-driver
-	Type      string `json:"type" yaml:"type"`             // normal, cold, hot, fastmemory
-	DBType    string `json:"db_type" yaml:"db_type"`       // boltdb, badgerdb, pebble
-	AsyncLoad bool   `json:"async_load" yaml:"async_load"` // load metadata async
-	SliceSize uint64 `json:"slice_size" yaml:"slice_size"` // slice size for each part
+	Path           string         `json:"path" yaml:"path"`                         // local path or ?
+	Driver         string         `json:"driver" yaml:"driver"`                     // native, custom-driver
+	Type           string         `json:"type" yaml:"type"`                         // normal, cold, hot, fastmemory
+	DBType         string         `json:"db_type" yaml:"db_type"`                   // boltdb, badgerdb, pebble
+	AsyncLoad      bool           `json:"async_load" yaml:"async_load"`             // load metadata async
+	SliceSize      uint64         `json:"slice_size" yaml:"slice_size"`             // slice size for each part
+	MaxObjectLimit int            `json:"max_object_limit" yaml:"max_object_limit"` // max object limit, upper Bound discard
+	DBMapConfig    map[string]any `json:"dbmap_config" yaml:"dbmap_config"`         // custom db config
 }
 
 type Plugin struct {

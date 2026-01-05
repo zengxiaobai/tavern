@@ -51,5 +51,8 @@ func mergeConfig(global *globalBucketOption, bucket *conf.Bucket) *conf.Bucket {
 	if copied.DBType == "" {
 		copied.DBType = global.DBType
 	}
+	if copied.MaxObjectLimit <= 0 {
+		copied.MaxObjectLimit = 10_000_000 // default 10 million objects
+	}
 	return copied
 }

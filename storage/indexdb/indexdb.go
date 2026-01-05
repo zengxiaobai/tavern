@@ -9,10 +9,11 @@ import (
 var defaultRegistry = NewRegistry()
 
 type option struct {
-	codec  encoding.Codec
-	dbType string
-	dbPath string
-	dbName string
+	codec     encoding.Codec
+	dbType    string
+	dbPath    string
+	dbName    string
+	mapConfig map[string]any
 }
 
 type Option func(*option)
@@ -26,6 +27,12 @@ func WithCodec(codec encoding.Codec) Option {
 func WithType(dbType string) Option {
 	return func(o *option) {
 		o.dbType = dbType
+	}
+}
+
+func WithDBConfig(mapConfig map[string]any) Option {
+	return func(o *option) {
+		o.mapConfig = mapConfig
 	}
 }
 

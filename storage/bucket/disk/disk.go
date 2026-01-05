@@ -51,7 +51,7 @@ func New(config *conf.Bucket, sharedkv storage.SharedKV) (storage.Bucket, error)
 		asyncLoad: config.AsyncLoad,
 		weight:    100, // default weight
 		sharedkv:  sharedkv,
-		cache:     lru.New[object.IDHash, storage.Mark](100_000),
+		cache:     lru.New[object.IDHash, storage.Mark](config.MaxObjectLimit),
 		fileMode:  fs.FileMode(0o755),
 		stop:      make(chan struct{}, 1),
 	}
@@ -59,7 +59,8 @@ func New(config *conf.Bucket, sharedkv storage.SharedKV) (storage.Bucket, error)
 	bucket.initWorkdir()
 
 	// create indexdb
-	db, err := indexdb.Create(config.DBType, indexdb.NewOption(dbPath, indexdb.WithType("pebble")))
+	db, err := indexdb.Create(config.DBType, indexdb.NewOption(dbPath,
+		indexdb.WithType("pebble"), indexdb.WithDBConfig(config.DBMapConfig)))
 	if err != nil {
 		log.Errorf("failed to create %s indexdb %v", config.DBType, err)
 		return nil, err
