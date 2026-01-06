@@ -13,9 +13,8 @@ else
     ARCH=amd64
 endif
 
-GITHASH=$(shell git rev-parse HEAD)
-VERSION=$(shell git describe --tags --always)
-LDFLAGS=-ldflags "-w -s -extldflags=-static -X main.Version=${VERSION} -X main.GitHash=${GITHASH} -X main.Built=$(shell date +%s)"
+
+LDFLAGS=-ldflags "-w -s -extldflags=-static"
 
 default:
 	make clean
@@ -27,7 +26,7 @@ install:
 
 .PHONY: build
 build:
-	@env CGO_ENABLED=0 go build ${LDFLAGS} -o bin/tavern main.go
+	@env CGO_ENABLED=0 go build ${LDFLAGS} -o bin/tavern .
 
 .PHONY: toolchain
 toolchain:
@@ -35,7 +34,7 @@ toolchain:
 
 .PHONY: run
 run:
-	@env CGO_ENABLED=0 go run ${LDFLAGS} main.go -c config.yaml
+	@env CGO_ENABLED=0 go run ${LDFLAGS} . -c config.yaml
 
 .PHONY: clean
 clean:

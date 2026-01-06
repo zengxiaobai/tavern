@@ -1,16 +1,21 @@
 package caching
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/omalloc/tavern/api/defined/v1/storage"
 	"github.com/omalloc/tavern/api/defined/v1/storage/object"
@@ -55,11 +60,13 @@ func (c *Caching) markCacheStatus(start, end int64) {
 		return
 	}
 
-	first := uint32(start / iobuf.BitBlock)
-	last := uint32(end / iobuf.BitBlock)
+	psize := int64(c.md.BlockSize)
+
+	first := uint32(start / psize)
+	last := uint32(end / psize)
 
 	// full hit
-	if iobuf.FullHit(first, last, c.md.Parts) {
+	if iobuf.FullHit(first, last, c.md.Chunks) {
 		c.cacheStatus = storage.CacheHit
 		if c.migration {
 			c.cacheStatus = storage.CacheHotHit
@@ -68,7 +75,7 @@ func (c *Caching) markCacheStatus(start, end int64) {
 	}
 
 	// part hit
-	if iobuf.PartHit(first, last, c.md.Parts) {
+	if iobuf.PartHit(first, last, c.md.Chunks) {
 		c.cacheStatus = storage.CachePartHit
 		return
 	}
@@ -103,6 +110,154 @@ func (c *Caching) reset() {
 	c.fileChanged = false
 	c.noContentLen = false
 	c.migration = false
+}
+
+func (c *Caching) getAvailableChunks() (available []uint32) {
+	available = make([]uint32, 0, c.md.Chunks.Count())
+	c.md.Chunks.Range(func(x uint32) {
+		available = append(available, x)
+	})
+	return available
+}
+
+func getContents(c *Caching, reqChunks []uint32, from uint32) (reader io.ReadCloser, count int, err error) {
+	idx := reqChunks[from]
+	partSize := c.opt.SliceSize
+	if c.md.BlockSize > 0 {
+		partSize = uint64(c.md.BlockSize)
+	}
+
+	// find the first existing chunk
+	f, err1 := getSliceChunkFile(c, idx)
+	if err1 != nil {
+		return nil, 0, err1
+	}
+
+	if f != nil {
+		// check file size
+		if err = checkChunkSize(c, f, idx); err == nil {
+			return f, 1, nil
+		}
+	}
+
+	// find all hit block.
+	availableChunks := c.getAvailableChunks()
+	slices.SortFunc(availableChunks, func(i, j uint32) int {
+		return int(i - j)
+	})
+	index := sort.Search(len(availableChunks), func(i int) bool {
+		return availableChunks[i] > reqChunks[from] &&
+			availableChunks[i] <= reqChunks[len(reqChunks)-1]
+	})
+
+	c.log.Debugf("find availabe chunk index %d, availableChunks: %v", index, availableChunks)
+	fromByte := uint64(reqChunks[from] * uint32(c.md.BlockSize))
+	if index < len(availableChunks) {
+		chunkFile, _ := getSliceChunkFile(c, availableChunks[index])
+		if chunkFile != nil {
+			if err := checkChunkSize(c, chunkFile, idx); err != nil {
+				_ = c.bucket.Discard(context.Background(), c.id)
+				return nil, 0, err
+			}
+		}
+
+		// 找到一个起始块，需要补齐前面的缺失块到当前这个块
+		toByte := min(c.md.Size-1, uint64(availableChunks[index]*uint32(partSize))-1)
+		req := c.req.Clone(context.Background())
+		newRange := fmt.Sprintf("bytes=%d-%d", fromByte, toByte)
+		req.Header.Set("Range", newRange)
+
+		reader := iobuf.AsyncReadCloser(func() (*http.Response, error) {
+			now := time.Now()
+			c.log.Debugf("doProxy[middle]: begin: %s, Range: %s, from index %d", now, newRange, index)
+			resp, err1 := c.doProxy(req, true)
+			c.log.Debugf("doProxy[middle]: timeCost: %s, Range: %s, from index%d", time.Since(now), newRange, index)
+			if err1 != nil {
+				return nil, err
+			}
+
+			// 发起的是 206 请求，但是返回的非 206
+			if resp.StatusCode != http.StatusPartialContent {
+				c.log.Warnf("doProxy[middle]: status code: %d, bod size: %d", resp.StatusCode, resp.ContentLength)
+				return resp, xhttp.NewBizError(resp.StatusCode, resp.Header)
+			}
+			return resp, err1
+		})
+
+		return iobuf.PartsReader(chunkFile /* io */, reader, chunkFile), int(availableChunks[index]-availableChunks[from]) + 1, nil
+	}
+
+	// no more hit block, fill
+	rawRange := c.req.Header.Get("Range")
+	rng, _ := xhttp.SingleRange(rawRange, c.md.Size)
+	tailChunkSize := uint64(reqChunks[len(reqChunks)-1]+1)*uint64(partSize) - 1
+	if tailChunkSize > uint64(rng.End) {
+		tailChunkSize = uint64(rng.End)
+	}
+	toByte := min(c.md.Size-1, tailChunkSize)
+	newRange := fmt.Sprintf("bytes=%d-%d", fromByte, toByte)
+	req := c.req.Clone(context.Background())
+	req.Header.Set("Range", newRange)
+
+	reader = iobuf.AsyncReadCloser(func() (*http.Response, error) {
+		now := time.Now()
+		c.log.Debugf("doProxy[tail]: begin: %s, rawRange: %s, newRange: %s", now, rawRange, newRange)
+		resp, err1 := c.doProxy(req, true)
+		c.log.Debugf("doProxy[tail]: timeCost: %s, rawRange: %s, newRange: %s", time.Since(now), rawRange, newRange)
+
+		if err1 != nil {
+			return nil, err
+		}
+		return resp, err1
+	})
+
+	return reader, len(reqChunks) - int(from), nil
+}
+
+func getSliceChunkFile(c *Caching, from uint32) (*os.File, error) {
+	wpath := c.id.WPathSlice(c.bucket.Path(), from)
+	c.log.Debugf("loading chunk slice from path: %s", wpath)
+	f, err := ropen(wpath)
+	if err == nil {
+		return f, nil
+	}
+
+	if !os.IsNotExist(err) {
+		if isTooManyFiles(err) {
+			return nil, err
+		}
+		c.log.Errorf("unexpected error while trying to load %s from storage: %s", from, err)
+		return nil, err
+	}
+
+	c.log.Debugf("load chunk slice from path: %s failed err %s", wpath, err)
+	return nil, nil
+}
+
+func checkChunkSize(c *Caching, f *os.File, idx uint32) error {
+	stat, err := f.Stat()
+	if err != nil {
+		c.log.Errorf("failed to stat chunk file %s: %s", f.Name(), err)
+		return err
+	}
+
+	size := stat.Size()
+
+	realSize := c.opt.SliceSize
+	if c.md.BlockSize > 0 {
+		realSize = c.md.BlockSize
+	}
+
+	if idx == uint32(c.md.Size/realSize) {
+		realSize = c.md.Size % realSize // last chunk size
+	}
+
+	if size != int64(realSize) {
+		c.log.Errorf("chunk file %s size mismatch: expected %d, got %d", f.Name(), realSize, size)
+		return fmt.Errorf("file-size(%d) != chunk-size(%d); fileName: %s", size, realSize, f.Name())
+	}
+
+	return nil
 }
 
 // ropen ReadOnly OpenFile

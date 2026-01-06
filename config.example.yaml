@@ -4,7 +4,11 @@ logger:
   caller: true
   traceid: true
   nopid: true
-  path: ./logs/tavern.log
+  max_size: 10 # is the maximum size in megabytes of the log file before it gets rotated.
+  max_backups: 10
+  max_age: 1 # is the maximum number of days to retain old log files
+  compress: false # should be compressed using gzip.
+  path: /var/log/tavern/tavern.log # path to the log file, if not set, logs to stdout
 server:
   addr: ":8080"
   read_timeout: 60s
@@ -42,6 +46,7 @@ server:
         collapsed_request: true
         collapsed_request_wait_timeout: 100ms
         include_query_in_cache_key: true
+        fill_range_percent: 100
         object_pool_enabled: true
         object_pool_size: 20000
         vary_limit: 100
@@ -54,7 +59,11 @@ server:
     encrypt:
       enabled: false
       secret: "123"
-    path: ./logs/access.log
+    path: /var/log/tavern/access.log
+  local_api_allow_hosts:
+    - "localhost"
+    - "127.1"
+    - "127.0.0.1"
 plugin:
   - name: example-plugin
     options:
@@ -81,9 +90,18 @@ storage:
   async_load: true
   eviction_policy: fifo # fifo, lru, lfu
   selection_policy: hashring # hashring, roundrobin
+  slice_size: 1048576 # 1MB
   buckets:
     - path: /cache1
       type: normal
+      max_object_limit: 10000000
+      db_config:
+        cache_size: 1024000000
+        mem_table_size: 256000000
+        bytes_per_sync: 10240000
+        wal_bytes_per_sync: 20480000
+        wal_min_sync_interval: 5
+        write_sync_mode: false
     - path: /cache2
       type: normal
 upstream:

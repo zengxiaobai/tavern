@@ -51,7 +51,7 @@ func New(config *conf.Bucket, sharedkv storage.SharedKV) (storage.Bucket, error)
 		asyncLoad: config.AsyncLoad,
 		weight:    100, // default weight
 		sharedkv:  sharedkv,
-		cache:     lru.New[object.IDHash, storage.Mark](100_000),
+		cache:     lru.New[object.IDHash, storage.Mark](config.MaxObjectLimit),
 		fileMode:  fs.FileMode(0o755),
 		stop:      make(chan struct{}, 1),
 	}
@@ -59,7 +59,8 @@ func New(config *conf.Bucket, sharedkv storage.SharedKV) (storage.Bucket, error)
 	bucket.initWorkdir()
 
 	// create indexdb
-	db, err := indexdb.Create(config.DBType, indexdb.NewOption(dbPath, indexdb.WithType("pebble")))
+	db, err := indexdb.Create(config.DBType,
+		indexdb.NewOption(dbPath, indexdb.WithType("pebble"), indexdb.WithDBConfig(config.DBConfig)))
 	if err != nil {
 		log.Errorf("failed to create %s indexdb %v", config.DBType, err)
 		return nil, err
@@ -99,8 +100,9 @@ func (d *diskBucket) evict() {
 }
 
 func (d *diskBucket) loadLRU() {
+
 	load := func(async bool) {
-		mdCount, blockCount := 0, 0
+		mdCount, chunkCount := 0, 0
 		counter := ratecounter.NewRateCounter(1 * time.Second)
 		blockCounter := ratecounter.NewRateCounter(1 * time.Second)
 		stop := make(chan struct{}, 1)
@@ -113,10 +115,10 @@ func (d *diskBucket) loadLRU() {
 				select {
 				case <-stop:
 					tick.Stop()
-					log.Infof("bucket %s %s load metadata(%d/block-%d) done. per-second %d(%d)/s", d.ID(), runMode, mdCount, blockCount, counter.Rate(), blockCounter.Rate())
+					log.Infof("bucket %s %s load metadata(%d/chunk-%d) done. per-second %d(%d)/s", d.ID(), runMode, mdCount, chunkCount, counter.Rate(), blockCounter.Rate())
 					return
 				case <-tick.C:
-					log.Infof("bucket %s %s load metadata(%d/block-%d). per-second %d(%d)/s", d.ID(), runMode, mdCount, blockCount, counter.Rate(), blockCounter.Rate())
+					log.Infof("bucket %s %s load metadata(%d/chunk-%d). per-second %d(%d)/s", d.ID(), runMode, mdCount, chunkCount, counter.Rate(), blockCounter.Rate())
 				}
 			}
 		}()
@@ -125,12 +127,20 @@ func (d *diskBucket) loadLRU() {
 		_ = d.indexdb.Iterate(context.Background(), nil, func(key []byte, meta *object.Metadata) bool {
 			if meta != nil {
 				mdCount++
-				blockCount += int(meta.Parts.Count())
+				chunkCount += meta.Chunks.Count()
 				d.cache.Set(meta.ID.Hash(), storage.NewMark(meta.LastRefUnix, uint64(meta.Refs)))
-				u, _ := url.Parse(meta.ID.Path())
-				_, _ = d.sharedkv.Incr(context.Background(), []byte(fmt.Sprintf("if/domain/%s", u.Host)), 1)
+
+				// store service domains
+				// TODO: add Debounce incr
+				if u, err1 := url.Parse(meta.ID.Path()); err1 == nil {
+					_, _ = d.sharedkv.Incr(context.Background(), []byte(fmt.Sprintf("if/domain/%s", u.Host)), 1)
+				}
+
+				// backfill inverted index for directory purge
+				_ = d.sharedkv.Set(context.Background(), []byte(fmt.Sprintf("ix/%s/%s", d.ID(), meta.ID.Key())), meta.ID.Bytes())
+
 				counter.Incr(1)
-				blockCounter.Incr(int64(meta.Parts.Count()))
+				blockCounter.Incr(int64(meta.Chunks.Count()))
 			}
 			return true
 		})
@@ -160,35 +170,16 @@ func (d *diskBucket) DiscardWithHash(ctx context.Context, hash object.IDHash) er
 	id := hash[:]
 	wpath := hash.WPath(d.path)
 
-	if log.Enabled(log.LevelDebug) {
-		log.Debugf("discard %s", wpath)
-	}
-
 	md, err := d.indexdb.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 
-	// 缓存不存在
-	if md == nil {
-		return os.ErrNotExist
+	if log.Enabled(log.LevelDebug) {
+		log.Debugf("discard url=%s hash=%s ", md.ID.Key(), wpath)
 	}
 
-	// part 是否存在
-	if md.Parts.Count() <= 0 {
-		return d.indexdb.Delete(ctx, id)
-	}
-
-	// how get caching locker
-
-	// 存在
-	if err = os.Remove(wpath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Context(ctx).Errorf("failed to remove file %s: %v", wpath, err)
-	}
-
-	// 删除 part
-	md.Parts.Clear()
-	return d.indexdb.Delete(ctx, id)
+	return d.discard(ctx, md)
 }
 
 // DiscardWithMessage implements storage.Bucket.
@@ -228,13 +219,20 @@ func (d *diskBucket) discard(ctx context.Context, md *object.Metadata) error {
 		}
 	}
 
-	fpath := md.ID.WPath(d.path)
-	if err := os.Remove(fpath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Context(ctx).Errorf("failed to remove cached file %s: %v", fpath, err)
-	}
+	// 删除所有 slice 缓存文件
+	md.Chunks.Range(func(x uint32) {
+		wpath := md.ID.WPathSlice(d.path, x)
+		if err := os.Remove(wpath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Context(ctx).Errorf("failed to remove cached slice file %s: %v", wpath, err)
+		}
+	})
 
-	u, _ := url.Parse(md.ID.Path())
-	_, _ = d.sharedkv.Decr(ctx, []byte(fmt.Sprintf("if/domain/%s", u.Host)), 1)
+	// 删除目录倒排索引
+	_ = d.sharedkv.Delete(ctx, []byte(fmt.Sprintf("ix/%s/%s", d.ID(), md.ID.Key())))
+
+	if u, err1 := url.Parse(md.ID.Path()); err1 == nil {
+		_, _ = d.sharedkv.Decr(ctx, []byte(fmt.Sprintf("if/domain/%s", u.Host)), 1)
+	}
 
 	return nil
 }
@@ -289,7 +287,23 @@ func (d *diskBucket) Store(ctx context.Context, meta *object.Metadata) error {
 		d.cache.Set(meta.ID.Hash(), storage.NewMark(meta.LastRefUnix, uint64(meta.Refs)))
 	}
 
-	return d.indexdb.Set(ctx, meta.ID.Bytes(), meta)
+	if err := d.indexdb.Set(ctx, meta.ID.Bytes(), meta); err != nil {
+		return err
+	}
+
+	// 写入域名 counter
+	if u, err1 := url.Parse(meta.ID.Path()); err1 == nil {
+		if _, err1 = d.sharedkv.Incr(context.Background(), []byte(fmt.Sprintf("if/domain/%s", u.Host)), 1); err1 != nil {
+			log.Warnf("save kvstore domain %s failed", u.Host)
+		}
+
+	}
+	// 写入目录倒排索引
+	if err := d.sharedkv.Set(ctx, []byte(fmt.Sprintf("ix/%s/%s", d.ID(), meta.ID.Key())), meta.ID.Bytes()); err != nil {
+		// ignore sharedkv error to not affect main storage
+		_ = err
+	}
+	return nil
 }
 
 // HasBad implements storage.Bucket.

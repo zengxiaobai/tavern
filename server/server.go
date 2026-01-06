@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"dario.cat/mergo"
 	"github.com/cloudflare/tableflip"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -21,6 +23,7 @@ import (
 	"github.com/omalloc/tavern/contrib/log"
 	"github.com/omalloc/tavern/contrib/transport"
 	xhttp "github.com/omalloc/tavern/pkg/x/http"
+	"github.com/omalloc/tavern/pkg/x/runtime"
 	"github.com/omalloc/tavern/server/middleware"
 	_ "github.com/omalloc/tavern/server/middleware/caching"
 	_ "github.com/omalloc/tavern/server/middleware/multirange"
@@ -70,6 +73,12 @@ func NewServer(flip *tableflip.Upgrader, config *conf.Bootstrap, plugins []plugi
 		config:       config,
 		serverConfig: config.Server,
 		cleanups:     make([]func(), 0),
+	}
+
+	if len(servConfig.LocalApiAllowHosts) > 0 {
+		for _, host := range servConfig.LocalApiAllowHosts {
+			localMatcher[host] = struct{}{}
+		}
 	}
 
 	// 初始化内部路由
@@ -151,6 +160,15 @@ func (s *HTTPServer) newServeMux() *http.ServeMux {
 	mod.HandlePProf(s.serverConfig.PProf, mux)
 	// internal handlers
 	mux.Handle("/favicon.ico", http.NotFoundHandler())
+	// version info
+	mux.Handle("/version", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ..
+		payload, _ := json.Marshal(runtime.BuildInfo)
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
 	// metrics
 	mux.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
@@ -288,16 +306,25 @@ func (s *HTTPServer) buildEndpoint() (http.HandlerFunc, error) {
 }
 
 func (s *HTTPServer) buildMiddlewareChain(tripper http.RoundTripper) (http.RoundTripper, error) {
-	conf := s.config.Server.Middleware
-	for i := len(conf) - 1; i >= 0; i-- {
-		if conf[i].Name == "" {
+	middlewares := s.config.Server.Middleware
+
+	// merge global options to each middleware options
+	global := s.globalOptions(make(map[string]any))
+
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		if middlewares[i].Name == "" {
 			panic("middlewares name is empty, config file array index " + strconv.Itoa(i))
 		}
 
-		middlewareConf := conf[i]
-		next, cleanup, err := middleware.Create(middlewareConf)
+		conf := middlewares[i]
+		if conf != nil && len(conf.Options) > 0 {
+			if err := mergo.Map(&conf.Options, global, mergo.WithOverride); err != nil {
+				log.Warnf("failed to merge global options to middleware %s: %v", conf.Name, err)
+			}
+		}
+		next, cleanup, err := middleware.Create(conf)
 		if err != nil {
-			log.Warnf("failed to create middleware %s: %v", middlewareConf.Name, err)
+			log.Warnf("failed to create middleware %s: %v", conf.Name, err)
 			continue
 		}
 
@@ -306,4 +333,14 @@ func (s *HTTPServer) buildMiddlewareChain(tripper http.RoundTripper) (http.Round
 		tripper = next(tripper)
 	}
 	return tripper, nil
+}
+
+func (s *HTTPServer) globalOptions(src map[string]any) map[string]any {
+
+	src["slice_size"] = s.config.Storage.SliceSize
+	if s.config.Hostname != "" {
+		src["hostname"] = s.config.Hostname
+	}
+
+	return src
 }

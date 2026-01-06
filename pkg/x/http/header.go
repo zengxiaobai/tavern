@@ -157,7 +157,7 @@ func ParseCacheTime(withKey string, src http.Header) (time.Duration, bool) {
 		}
 
 		// default cache time
-		return time.Second * 3600, true
+		return DefaultProtocolCacheTime, true
 	}
 
 	str := src.Get(withKey)

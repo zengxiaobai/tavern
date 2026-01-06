@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	stdlog "log"
 	"net/url"
@@ -26,6 +27,7 @@ import (
 	"github.com/omalloc/tavern/contrib/transport"
 	"github.com/omalloc/tavern/pkg/encoding"
 	"github.com/omalloc/tavern/pkg/encoding/json"
+	"github.com/omalloc/tavern/pkg/x/runtime"
 	"github.com/omalloc/tavern/plugin"
 	_ "github.com/omalloc/tavern/plugin/example"
 	_ "github.com/omalloc/tavern/plugin/purge"
@@ -41,11 +43,6 @@ var (
 	flagConf string = "config.yaml"
 	// flagVerbose is the verbose flag.
 	flagVerbose bool
-
-	// Version is the version of the app.
-	Version string = "no-set"
-	GitHash string = "no-set"
-	Built   string = "0"
 )
 
 func init() {
@@ -151,10 +148,13 @@ func newApp(bc *conf.Bootstrap, logger log.Logger) (*kratos.App, error) {
 	return kratos.New(
 		kratos.ID(id),
 		kratos.Name("tavern"),
-		kratos.Version(Version),
+		kratos.Version(runtime.BuildInfo.VcsRevision),
 		kratos.StopTimeout(stopTimeout),
 		kratos.Logger(logger),
 		kratos.Server(servers...),
+		kratos.BeforeStop(func(_ context.Context) error {
+			return storage.Close()
+		}),
 	), nil
 }
 
@@ -165,10 +165,10 @@ func newLogger(cl *conf.Logger) log.Logger {
 		_ = os.MkdirAll(filepath.Dir(cl.Path), 0o755)
 		f := &lumberjack.Logger{
 			Filename:   cl.Path,
-			MaxSize:    1,
-			MaxBackups: 3,
-			MaxAge:     1,
-			Compress:   false,
+			MaxSize:    cl.MaxSize,
+			MaxBackups: cl.MaxBackups,
+			MaxAge:     cl.MaxAge,
+			Compress:   cl.Compress,
 		}
 		w = log.NewStdLogger(f)
 	}
